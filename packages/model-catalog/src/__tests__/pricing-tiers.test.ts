@@ -11,15 +11,24 @@
 
 import { describe, expect, it, vi } from "vitest"
 
-vi.mock("../llm/anthropic-pricing.generated.js", async importOriginal => {
-  const original = await importOriginal<typeof import("../llm/anthropic-pricing.generated.js")>()
+vi.mock("../llm/anthropic-pricing.generated.js", () => {
   return {
     ANTHROPIC_GENERATED_PRICING: {
-      ...original.ANTHROPIC_GENERATED_PRICING,
       "claude-haiku-5-5": { inputPer1M: 0.1, outputPer1M: 0.5, cacheReadMultiplier: 0.1, cacheWriteMultiplier: 1.25, tiers: [{ aboveInputTokens: 100000, inputPer1M: 0.5, outputPer1M: 2.5, cacheReadMultiplier: 0.1, cacheWriteMultiplier: 1.25 }], vendor: "anthropic", provider: "anthropic" },
     },
   }
 })
+
+vi.mock("../llm/xai-pricing.generated.js", () => ({
+  XAI_GENERATED_PRICING: {
+    "grok-4.20": { inputPer1M: 1.25, outputPer1M: 2.5, cacheReadMultiplier: 0.16, tiers: [{ aboveInputTokens: 200000, inputPer1M: 2.5, outputPer1M: 5, cacheReadMultiplier: 0.16 }], vendor: "xai", provider: "xai" },
+  },
+}))
+vi.mock("../llm/google-pricing.generated.js", () => ({
+  GOOGLE_GENERATED_PRICING: {
+    "gemini-2.5-pro": { inputPer1M: 1.25, outputPer1M: 10, cacheReadMultiplier: 0.1, tiers: [{ aboveInputTokens: 200000, inputPer1M: 2.5, outputPer1M: 15, cacheReadMultiplier: 0.1 }], vendor: "google", provider: "google" },
+  },
+}))
 
 const { calculateLLMCreditCost, getCacheStats, selectPricingTier } = await import("../llm/catalog.js")
 const { calculateCost } = await import("../cost/index.js")

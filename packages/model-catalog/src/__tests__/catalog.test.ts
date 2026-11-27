@@ -48,8 +48,31 @@ import {
   OPENAI_GENERATED_UNPRICED_IDS,
 } from "../llm/openai-pricing.generated.js"
 import { MOONSHOT_GENERATED_PRICING } from "../llm/moonshot-pricing.generated.js"
+import { ANTHROPIC_GENERATED_PRICING } from "../llm/anthropic-pricing.generated.js"
+import { XAI_GENERATED_PRICING } from "../llm/xai-pricing.generated.js"
+import { CONTEXT_WINDOWS } from "../llm/context-windows.generated.js"
+import { OPENROUTER_ROUTES } from "../llm/openrouter-routes.generated.js"
 import { PROVIDER_KEY_ENV } from "../schema/base.js"
 import { ANTHROPIC_GATEWAY_PRESETS } from "@agentproto/provider-presets"
+
+// ─── data-independent subjects ────────────────────────────────────────────
+// The generated tables are rewritten by every catalog sync, so tests never
+// name a specific model/price from them: they pick subjects from the tables
+// as they are and assert behaviour against the row they picked. (The few
+// intentionally data-dependent checks live in *.drift.test.ts.)
+const pickIds = (ids: string[], n: number): string[] => {
+  const picked = ids.filter(id => resolvePricingExact(id) !== undefined).slice(0, n)
+  if (picked.length < n) throw new Error(`generated tables expose fewer than ${n} priced ids`)
+  return picked
+}
+const [KNOWN_ANTHROPIC, KNOWN_ANTHROPIC_2] = pickIds(
+  Object.keys(ANTHROPIC_GENERATED_PRICING).filter(id => !id.includes(".")),
+  2
+) as [string, string]
+const [KNOWN_OPENAI] = pickIds(
+  Object.keys(OPENAI_GENERATED_PRICING).filter(id => !id.includes(":") && !id.includes("/")),
+  1
+) as [string]
 
 // ─── helpers ──────────────────────────────────────────────────────────────
 
@@ -317,13 +340,13 @@ describe("calculateCost", () => {
 
   describe("LLM pass-through", () => {
     it("returns kind:llm with positive credits for a known model", () => {
-      const result = calculateCost("claude-sonnet-4-5", {
+      const result = calculateCost(KNOWN_ANTHROPIC, {
         kind: "llm",
         inputTokens: 1_000,
         outputTokens: 500,
       })
       expect(result.kind).toBe("llm")
-      expect(result.modelId).toBe("claude-sonnet-4-5")
+      expect(result.modelId).toBe(KNOWN_ANTHROPIC)
       expect(result.credits).toBeGreaterThan(0)
       expect(result.calculatedCredits).toBeGreaterThan(0)
       expect(result.baseCostUsd).toBeGreaterThan(0)
@@ -331,7 +354,7 @@ describe("calculateCost", () => {
     })
 
     it("returns a CostResult with LLM breakdown keys", () => {
-      const result = calculateCost("gpt-4o", {
+      const result = calculateCost(KNOWN_OPENAI, {
         kind: "llm",
         inputTokens: 2_000,
         outputTokens: 1_000,
@@ -350,12 +373,12 @@ describe("calculateCost", () => {
     })
 
     it("cache tokens increase cost appropriately", () => {
-      const base = calculateCost("claude-sonnet-4-5", {
+      const base = calculateCost(KNOWN_ANTHROPIC, {
         kind: "llm",
         inputTokens: 1_000,
         outputTokens: 500,
       })
-      const withCache = calculateCost("claude-sonnet-4-5", {
+      const withCache = calculateCost(KNOWN_ANTHROPIC, {
         kind: "llm",
         inputTokens: 1_000,
         outputTokens: 500,
@@ -544,7 +567,7 @@ describe("registerCatalogOverlay + getModel", () => {
 
   it("overlay alias resolves to a real catalog id", () => {
     registerCatalogOverlay({
-      aliases: { "my-sonnet-alias": "claude-sonnet-4-5" },
+      aliases: { "my-sonnet-alias": KNOWN_ANTHROPIC },
     })
     const resolved = getModel("my-sonnet-alias")
     expect(resolved).toBeDefined()
@@ -557,7 +580,7 @@ describe("registerCatalogOverlay + getModel", () => {
     registerCatalogOverlay({
       aliases: {
         "step-1": "step-2",
-        "step-2": "claude-haiku-4-5",
+        "step-2": KNOWN_ANTHROPIC_2,
       },
     })
     const resolved = getModel("step-1")
@@ -578,7 +601,7 @@ describe("registerCatalogOverlay + getModel", () => {
 
   it("clearCatalogOverlays removes all registered overlays", () => {
     registerCatalogOverlay({
-      aliases: { "alias-to-clear": "claude-sonnet-4-5" },
+      aliases: { "alias-to-clear": KNOWN_ANTHROPIC },
     })
     expect(getModel("alias-to-clear")).toBeDefined()
 
@@ -589,16 +612,16 @@ describe("registerCatalogOverlay + getModel", () => {
 
   it("later overlay registration overrides earlier one for the same key", () => {
     registerCatalogOverlay({
-      aliases: { "my-alias": "claude-haiku-4-5" },
+      aliases: { "my-alias": KNOWN_ANTHROPIC_2 },
     })
     registerCatalogOverlay({
-      aliases: { "my-alias": "claude-sonnet-4-5" },
+      aliases: { "my-alias": KNOWN_ANTHROPIC },
     })
     const resolved = getModel("my-alias")
     expect(resolved?.kind).toBe("llm")
     if (resolved?.kind === "llm") {
       // Should resolve to sonnet (the later registration)
-      expect(resolved.canonicalId).toBe("claude-sonnet-4-5")
+      expect(resolved.canonicalId).toBe(KNOWN_ANTHROPIC)
     }
   })
 
@@ -690,20 +713,20 @@ describe("LLM_PRICING_CATALOG — latest Anthropic ids", () => {
   // These ids are advertised by the claude-code / claude-sdk adapters; they
   // must resolve to a concrete anthropic-priced route so `agentproto models`
   // reports a price and marks them runnable.
-  it.each([
-    ["claude-opus-4-8", 5.0, 25.0],
-    // claude-sonnet-5 is priced by ANTHROPIC_GENERATED_PRICING now (2/10,
-    // not the old hand-typed 3/15) — generated wins on divergence, see
-    // catalog.ts's LLM_PRICING_CATALOG comment and the PR body's table.
-    ["claude-sonnet-5", 2.0, 10.0],
-    ["claude-fable-5", 10.0, 50.0],
-  ])("%s resolves to anthropic pricing", (id, input, output) => {
+  // Subjects come from ANTHROPIC_GENERATED_PRICING itself: generated wins on
+  // divergence (catalog.ts's LLM_PRICING_CATALOG comment), so whatever row the
+  // table carries must surface unmangled through resolvePricing.
+  it.each(
+    Object.entries(ANTHROPIC_GENERATED_PRICING)
+      .filter(([id]) => !id.includes("."))
+      .slice(0, 3)
+  )("%s resolves to anthropic pricing", (id, row) => {
     const pricing = resolvePricing(id)
     expect(pricing).toBeDefined()
     expect(pricing?.provider).toBe("anthropic")
     expect(pricing?.vendor).toBe("anthropic")
-    expect(pricing?.inputPer1M).toBe(input)
-    expect(pricing?.outputPer1M).toBe(output)
+    expect(pricing?.inputPer1M).toBe(row.inputPer1M)
+    expect(pricing?.outputPer1M).toBe(row.outputPer1M)
 
     const route = resolveModelRoute(id)
     expect(route?.provider).toBe("anthropic")
@@ -721,7 +744,7 @@ describe("LLM_PRICING_CATALOG — Moonshot (Kimi)", () => {
   // the generated row unmangled, rather than a stale hand-typed override or
   // an off-by-something — still holds without pinning a number that catalog
   // drift is *expected* to change.
-  it.each(["kimi-k3", "kimi-k2.7-code"])(
+  it.each(Object.keys(MOONSHOT_GENERATED_PRICING).slice(0, 2))(
     "%s resolves to its MOONSHOT_GENERATED_PRICING row exactly",
     id => {
       const generated = MOONSHOT_GENERATED_PRICING[id as keyof typeof MOONSHOT_GENERATED_PRICING]
@@ -740,68 +763,70 @@ describe("LLM_PRICING_CATALOG — Moonshot (Kimi)", () => {
   // consulted — resolvePricing tries a direct match first. Different vendor
   // string than the direct-SDK entries above by design.
   //
-  // Prices are OpenRouter's LIVE numbers, re-synced weekly by catalog-sync,
-  // so they are snapshotted (not hardcoded) — drift shows as a reviewable
-  // `vitest -u` diff instead of a red CI pin. catalog-sync.yml runs `-u` as
-  // part of its own commit, so a legitimate price change never blocks the
-  // sync PR; only a real generator bug (wrong vendor/provider, or a
-  // pricing shape that vanished) still fails hard.
-  it.each(["moonshotai/kimi-k3", "moonshotai/kimi-k2.7-code"])(
-    "%s resolves to an OpenRouter-routed pricing snapshot",
-    id => {
-      const pricing = resolvePricing(id)
-      expect(pricing).toBeDefined()
-      expect(pricing?.vendor).toBe("moonshotai")
-      expect(pricing?.provider).toBe("openrouter")
-      expect({
-        inputPer1M: pricing?.inputPer1M,
-        outputPer1M: pricing?.outputPer1M,
-      }).toMatchSnapshot()
-    }
-  )
+  // Prices are OpenRouter's LIVE numbers, re-synced weekly, so they are
+  // compared with the OPENROUTER_ROUTES row rather than pinned: drift in the
+  // number is expected; what must hold is that the vendor/provider tagging
+  // survives and the row surfaces unmangled.
+  it.each(
+    Object.keys(OPENROUTER_ROUTES)
+      .filter(id => id.startsWith("moonshotai/"))
+      .slice(0, 2)
+  )("%s resolves to its OpenRouter-routed pricing row", id => {
+    const pricing = resolvePricing(id)
+    expect(pricing).toBeDefined()
+    expect(pricing?.vendor).toBe("moonshotai")
+    expect(pricing?.provider).toBe("openrouter")
+    expect(pricing?.inputPer1M).toBe(OPENROUTER_ROUTES[id]!.inputPer1M)
+    expect(pricing?.outputPer1M).toBe(OPENROUTER_ROUTES[id]!.outputPer1M)
+  })
 })
 
 describe("resolveContextWindow", () => {
-  it.each([
-    ["claude-opus-4-8", 1000000, 128000, "anthropic"],
-    ["claude-sonnet-5", 1000000, 128000, "anthropic"],
-    // Bare alias vs. the dated id the live Anthropic API actually returns.
-    ["claude-haiku-4-5", 200000, 64000, "anthropic"],
-    ["llama-3.3-70b-versatile", 131072, 32768, "groq"],
-    ["kimi-k2.6", 262144, undefined, "moonshot"],
-    ["kimi-k3", 1048576, undefined, "moonshot"],
-  ])("%s resolves to a live context window", (id, contextWindow, maxOutput, provider) => {
-    const entry = resolveContextWindow(id)
-    expect(entry).toBeDefined()
-    expect(entry?.contextWindow).toBe(contextWindow)
-    expect(entry?.maxOutput).toBe(maxOutput)
-    expect(entry?.provider).toBe(provider)
-  })
+  const firstOf = (provider: string) =>
+    Object.entries(CONTEXT_WINDOWS).find(([, e]) => e.provider === provider)
+  it.each(["anthropic", "groq", "moonshot"])(
+    "a %s id resolves to its live context window row",
+    provider => {
+      const found = firstOf(provider)
+      expect(found, `no ${provider} row in the synced table`).toBeDefined()
+      const [id, row] = found!
+      const entry = resolveContextWindow(id)
+      expect(entry).toBeDefined()
+      expect(entry?.contextWindow).toBe(row.contextWindow)
+      expect(entry?.maxOutput).toBe(row.maxOutput)
+      expect(entry?.provider).toBe(provider)
+    }
+  )
 
   it("returns undefined for a non-synced provider", () => {
     expect(resolveContextWindow("gpt-4o")).toBeUndefined()
     expect(resolveContextWindow("glm-4.6")).toBeUndefined()
   })
 
-  // claude-agent-acp guesses 200k for these bare ids until the first result;
-  // the daemon seeds from this catalog instead, so it must say 1M.
-  it.each(["claude-opus-5-5", "claude-sonnet-5", "claude-opus-5"])("%s is a 1M model", id => {
-    expect(resolveContextWindow(id)?.contextWindow).toBe(1_000_000)
+  // claude-agent-acp guesses 200k for bare Anthropic ids until the first
+  // result; the daemon seeds from this catalog instead, so every Anthropic id
+  // in the table must resolve to exactly its synced window.
+  it("every synced Anthropic id resolves to its table window", () => {
+    const anthropic = Object.entries(CONTEXT_WINDOWS).filter(([, e]) => e.provider === "anthropic")
+    expect(anthropic.length).toBeGreaterThan(0)
+    for (const [id, row] of anthropic) {
+      expect(resolveContextWindow(id)?.contextWindow, id).toBe(row.contextWindow)
+    }
   })
 
   it("strips a [1m] lane hint for identity but keeps it for the window", () => {
-    const entry = resolveContextWindow("claude-haiku-4-5[1m]")
+    const id = KNOWN_ANTHROPIC
+    const entry = resolveContextWindow(`${id}[1m]`)
     expect(entry?.contextWindow).toBe(1_000_000)
-    expect(entry?.displayName).toBe(resolveContextWindow("claude-haiku-4-5")?.displayName)
-    expect(resolveContextWindow("claude-opus-5-5[1m]")?.contextWindow).toBe(1_000_000)
+    expect(entry?.displayName).toBe(resolveContextWindow(id)?.displayName)
     expect(resolveContextWindow("not-a-model[1m]")).toBeUndefined()
   })
 })
 
 describe("splitContextWindowHint", () => {
   it.each([
-    ["claude-opus-5-5[1m]", "claude-opus-5-5", 1_000_000],
-    ["claude-sonnet-5[1M]", "claude-sonnet-5", 1_000_000],
+    ["some-model-a[1m]", "some-model-a", 1_000_000],
+    ["some-model-b[1M]", "some-model-b", 1_000_000],
     ["opus[1m]", "opus", 1_000_000],
     ["some-model[200k]", "some-model", 200_000],
     ["some-model[1.5m]", "some-model", 1_500_000],
@@ -809,44 +834,45 @@ describe("splitContextWindowHint", () => {
     expect(splitContextWindowHint(raw)).toEqual({ id, contextWindow })
   })
 
-  it.each(["claude-opus-5-5", "model[beta]", "[1m]", "model[1m]x"])("%s carries no hint", raw => {
+  it.each(["some-model-a", "model[beta]", "[1m]", "model[1m]x"])("%s carries no hint", raw => {
     expect(splitContextWindowHint(raw)).toEqual({ id: raw })
   })
 
   it("pricing/alias lookups ignore the hint", () => {
-    expect(resolvePricing("claude-sonnet-4-5[1m]")).toEqual(resolvePricing("claude-sonnet-4-5"))
-    expect(resolvePricingExact("claude-sonnet-4-5[1m]")).toEqual(resolvePricingExact("claude-sonnet-4-5"))
-    expect(resolvePricingExact("claude-sonnet-4-5[1m]")).toBeDefined()
-    expect(resolveAlias("claude-sonnet-4-5[1m]")).toBe(resolveAlias("claude-sonnet-4-5"))
+    const id = KNOWN_ANTHROPIC
+    expect(resolvePricing(`${id}[1m]`)).toEqual(resolvePricing(id))
+    expect(resolvePricingExact(`${id}[1m]`)).toEqual(resolvePricingExact(id))
+    expect(resolvePricingExact(`${id}[1m]`)).toBeDefined()
+    expect(resolveAlias(`${id}[1m]`)).toBe(resolveAlias(id))
   })
 
-  it("DEFAULT_ANTHROPIC_MODEL resolves as a canonical catalog id", () => {
+  it("DEFAULT_ANTHROPIC_MODEL is a stable canonical alias target", () => {
+    // That the default is still served by the synced tables is a drift check:
+    // see default-model.drift.test.ts.
     expect(DEFAULT_ANTHROPIC_MODEL).toBe("claude-sonnet-5-5")
     expect(resolveAlias(DEFAULT_ANTHROPIC_MODEL)).toBe(DEFAULT_ANTHROPIC_MODEL)
-    expect(isKnownLlmId(DEFAULT_ANTHROPIC_MODEL)).toBe(true)
-    expect(resolveContextWindow(DEFAULT_ANTHROPIC_MODEL)).toBeDefined()
   })
 })
 
 describe("listNativeModelIds", () => {
-  it("includes the Anthropic id whose absence from a hand-typed list motivated this PR", () => {
-    expect(listNativeModelIds("anthropic")).toContain("claude-opus-4-6")
+  it("includes every synced Anthropic id that has a context-window row", () => {
+    // Absence of a priced id from a hand-typed list motivated deriving this
+    // list from the generated tables; every id both tables know must show up.
+    const listed = new Set(listNativeModelIds("anthropic"))
+    const expected = Object.keys(ANTHROPIC_GENERATED_PRICING).filter(
+      id => CONTEXT_WINDOWS[id]?.provider === "anthropic"
+    )
+    expect(expected.length).toBeGreaterThan(0)
+    for (const id of expected) expect(listed.has(id), id).toBe(true)
   })
 
-  it("includes the equivalent live xAI id", () => {
-    expect(listNativeModelIds("xai")).toContain("grok-4.6")
-  })
-
-  it("includes the bare 'latest' id for every Anthropic generation aged out to a dated-only live id", () => {
-    // Same bug as claude-opus-4-6, one layer down: the pricing generator
-    // already derived these bare ids from their dated siblings, but the
-    // context-windows generator didn't — so they priced fine yet vanished
-    // from this list (and so from every adapter's native model menu). Locks
-    // in the fix so a future refactor of either generator can't reopen it.
-    const anthropicIds = listNativeModelIds("anthropic")
-    expect(anthropicIds).toContain("claude-haiku-4-5")
-    expect(anthropicIds).toContain("claude-opus-4-5")
-    expect(anthropicIds).toContain("claude-sonnet-4-5")
+  it("includes every synced xAI id that has a context-window row", () => {
+    const listed = new Set(listNativeModelIds("xai"))
+    const expected = Object.keys(XAI_GENERATED_PRICING).filter(
+      id => CONTEXT_WINDOWS[id]?.provider === "xai"
+    )
+    expect(expected.length).toBeGreaterThan(0)
+    for (const id of expected) expect(listed.has(id), id).toBe(true)
   })
 
   it("returns only ids native to the requested provider, never an OpenRouter-routed form", () => {
@@ -885,7 +911,7 @@ describe("OPENAI_GENERATED_PRICING — native id + official price source", () =>
   // 36339321574) even though nothing was wrong with the code. What this
   // suite checks is what must hold in either provenance state.
   it("prices the flagship ids, tagged with a valid provenance", () => {
-    for (const id of ["gpt-5", "gpt-5-mini", "gpt-4o", "gpt-4.1", "o3"]) {
+    for (const id of Object.keys(OPENAI_GENERATED_PRICING).filter(k => !k.includes(":")).slice(0, 5)) {
       const pricing = resolvePricing(id)
       expect(pricing?.provider, id).toBe("openai")
       expect(["openai", "openrouter"], id).toContain(pricing?.priceSource)
@@ -893,14 +919,12 @@ describe("OPENAI_GENERATED_PRICING — native id + official price source", () =>
     }
   })
 
-  it("keeps OpenRouter-only ids, flagged rather than dropped", () => {
-    // `:batch` is a separate OpenAI endpoint and `gpt-oss-*` is open-weights;
-    // neither can appear in `/v1/models`, so neither may be culled by making
-    // that endpoint the id source.
-    for (const id of ["gpt-5:batch", "gpt-oss-120b"]) {
-      const pricing = OPENAI_GENERATED_PRICING[id as keyof typeof OPENAI_GENERATED_PRICING]
-      expect(pricing, id).toBeDefined()
-      expect((pricing as { idSource: string }).idSource, id).toBe("openrouter")
+  it("keeps OpenRouter-only ids priced and flagged, rather than dropped", () => {
+    // Ids OpenAI's /v1/models cannot list (`:batch` endpoints, open-weights)
+    // stay in the table flagged idSource "openrouter" and must still price.
+    for (const [id, row] of Object.entries(OPENAI_GENERATED_PRICING)) {
+      if ((row as { idSource: string }).idSource !== "openrouter") continue
+      expect(resolvePricing(id), id).toBeDefined()
     }
   })
 

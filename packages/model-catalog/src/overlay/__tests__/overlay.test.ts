@@ -3,14 +3,23 @@ import {
   registerCatalogOverlay,
   clearCatalogOverlays,
 } from "../index.js"
+import { ANTHROPIC_GENERATED_PRICING } from "../../llm/anthropic-pricing.generated.js"
 import { getModel, resolveAlias, listModels } from "../../registry/index.js"
+
+// A core LLM id taken from the synced Anthropic table as it is, so a sync that
+// retires a model cannot break the overlay tests.
+const CORE_ID = (() => {
+  const id = Object.keys(ANTHROPIC_GENERATED_PRICING).find(k => !k.includes(".") && getModel(k))
+  if (!id) throw new Error("no resolvable Anthropic id in the synced tables")
+  return id
+})()
 
 afterEach(() => clearCatalogOverlays())
 
 describe("consumer catalog overlay", () => {
   it("adds a consumer alias that resolves to a core model", () => {
     // pick a real core LLM id
-    const anthropicId = "claude-opus-4-5"
+    const anthropicId = CORE_ID
     const before = getModel("legacy-opus")
     expect(before).toBeUndefined()
 
@@ -45,7 +54,7 @@ describe("consumer catalog overlay", () => {
   })
 
   it("overlay entry overrides a core entry with the same id (no dupes in list)", () => {
-    const coreId = "claude-opus-4-5"
+    const coreId = CORE_ID
     registerCatalogOverlay({
       llm: { [coreId]: { inputPer1M: 999, outputPer1M: 999, provider: "anthropic" } as never },
     })
@@ -57,15 +66,15 @@ describe("consumer catalog overlay", () => {
 
   it("alias chains collapse and cycles don't hang", () => {
     registerCatalogOverlay({
-      aliases: { a: "b", b: "claude-opus-4-5", x: "y", y: "x" },
+      aliases: { a: "b", b: CORE_ID, x: "y", y: "x" },
     })
-    expect(resolveAlias("a")).toBe("claude-opus-4-5")
+    expect(resolveAlias("a")).toBe(CORE_ID)
     // x→y→x cycle: resolves to a terminal without infinite loop
     expect(() => resolveAlias("x")).not.toThrow()
   })
 
   it("clearCatalogOverlays resets state", () => {
-    registerCatalogOverlay({ aliases: { foo: "claude-opus-4-5" } })
+    registerCatalogOverlay({ aliases: { foo: CORE_ID } })
     expect(getModel("foo")).toBeDefined()
     clearCatalogOverlays()
     expect(getModel("foo")).toBeUndefined()

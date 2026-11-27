@@ -15,7 +15,7 @@
  *     route IS the leading segment) and the no-spread pricing guard
  */
 
-import { describe, it, expect, beforeEach } from "vitest"
+import { describe, it, expect, beforeEach, beforeAll, afterAll } from "vitest"
 import {
   parseModelRef,
   tryParseModelRef,
@@ -33,8 +33,42 @@ import {
   type ModelRef,
   type CustomRouteConfig,
 } from "../index.js"
-import { HUGGINGFACE_ROUTES } from "../../llm/huggingface-routes.generated.js"
+import {
+  HUGGINGFACE_ROUTES,
+  type HuggingFaceRoute,
+} from "../../llm/huggingface-routes.generated.js"
+import { resolveAlias } from "../../llm/catalog.js"
 import { REQUESTY_ROUTES } from "../../llm/requesty-routes.generated.js"
+import { OPENROUTER_ROUTES } from "../../llm/openrouter-routes.generated.js"
+import { OPENCODE_GO_ROUTES } from "../../llm/opencode-go-routes.generated.js"
+import { OPENCODE_ZEN_ROUTES } from "../../llm/opencode-zen-routes.generated.js"
+import { ANTHROPIC_GENERATED_PRICING } from "../../llm/anthropic-pricing.generated.js"
+import { OPENAI_GENERATED_PRICING } from "../../llm/openai-pricing.generated.js"
+import { MOONSHOT_GENERATED_PRICING } from "../../llm/moonshot-pricing.generated.js"
+
+// ── data-independent subjects ──────────────────────────────────────────────
+// The generated tables are rewritten by every catalog sync, so the resolver
+// tests below never name a specific model: they pick subjects from the tables
+// as they are and assert the resolver's behaviour on the row picked.
+const firstWhere = <T,>(items: T[], pred: (item: T) => boolean, what: string): T => {
+  const found = items.find(pred)
+  if (found === undefined) throw new Error(`no ${what} in the synced tables`)
+  return found
+}
+/** A bare OpenAI product with a direct row AND OpenRouter + Requesty rows. */
+const OAI = firstWhere(
+  Object.keys(OPENAI_GENERATED_PRICING).filter(id => !id.includes(":") && !id.includes("/")),
+  id => `openai/${id}` in OPENROUTER_ROUTES && `openai/${id}` in REQUESTY_ROUTES && resolveLlmModelRoute(`openai/${id}`) !== undefined,
+  "OpenAI product routed by OpenRouter and Requesty"
+)
+/** A bare Anthropic product that Zen also serves. */
+const CLAUDE = firstWhere(
+  Object.keys(ANTHROPIC_GENERATED_PRICING).filter(id => !id.includes(".")),
+  id => `opencode/${id}` in OPENCODE_ZEN_ROUTES && resolveLlmModelRoute(id) !== undefined,
+  "Anthropic product served by Zen"
+)
+const GO_ID = Object.keys(OPENCODE_GO_ROUTES)[0]!
+const ZEN_ID = Object.keys(OPENCODE_ZEN_ROUTES)[0]!
 
 describe("parseModelRef", () => {
   it("parses vendor/product with implicit route = vendor", () => {
@@ -344,11 +378,11 @@ describe("resolveLlmModelRoute", () => {
     clearCustomRoutes()
   })
 
-  it("resolves direct vendor route for openai/gpt-4o", () => {
-    const route = resolveLlmModelRoute("openai/gpt-4o")
+  it("resolves direct vendor route for a direct OpenAI product", () => {
+    const route = resolveLlmModelRoute(`openai/${OAI}`)
     expect(route).toBeDefined()
     expect(route!.vendor).toBe("openai")
-    expect(route!.product).toBe("gpt-4o")
+    expect(route!.product).toBe(OAI)
     expect(route!.route).toBe("openai")
     expect(route!.transport.flavor).toBe("openai")
     expect(route!.pricing.provider).toBe("openai")
@@ -356,14 +390,14 @@ describe("resolveLlmModelRoute", () => {
   })
 
   it("direct route uses canonical product id after alias resolution", () => {
-    const route = resolveLlmModelRoute("openai/gpt-5.4")
+    const route = resolveLlmModelRoute(`openai/${OAI}`)
     expect(route).toBeDefined()
-    expect(route!.canonicalProductId).toBe("gpt-5.4")
+    expect(route!.canonicalProductId).toBe(resolveAlias(OAI))
   })
 
-  it("resolves distinct OpenRouter route for openai/gpt-4o@openrouter", () => {
-    const direct = resolveLlmModelRoute("openai/gpt-4o")
-    const openrouter = resolveLlmModelRoute("openai/gpt-4o@openrouter")
+  it("resolves distinct OpenRouter route for a product OpenRouter also serves", () => {
+    const direct = resolveLlmModelRoute(`openai/${OAI}`)
+    const openrouter = resolveLlmModelRoute(`openai/${OAI}@openrouter`)
     expect(openrouter).toBeDefined()
     expect(openrouter!.route).toBe("openrouter")
     expect(openrouter!.transport.flavor).toBe("openrouter")
@@ -378,9 +412,9 @@ describe("resolveLlmModelRoute", () => {
     expect(route).toBeUndefined()
   })
 
-  it("resolves distinct Requesty route for openai/gpt-4.1@requesty", () => {
-    const direct = resolveLlmModelRoute("openai/gpt-4.1")
-    const requesty = resolveLlmModelRoute("openai/gpt-4.1@requesty")
+  it("resolves distinct Requesty route for a product Requesty also serves", () => {
+    const direct = resolveLlmModelRoute(`openai/${OAI}`)
+    const requesty = resolveLlmModelRoute(`openai/${OAI}@requesty`)
     expect(requesty).toBeDefined()
     expect(requesty!.route).toBe("requesty")
     expect(requesty!.transport.flavor).toBe("requesty")
@@ -404,9 +438,9 @@ describe("resolveLlmModelRoute", () => {
 
   it("keeps the direct vendor route unchanged by the Requesty table", () => {
     // Regression guard: REQUESTY_ROUTES must not be spread into
-    // LLM_PRICING_CATALOG, or a bare openai/gpt-4.1 would silently pick up
+    // LLM_PRICING_CATALOG, or a bare openai/<product> would silently pick up
     // Requesty's router pricing.
-    const direct = resolveLlmModelRoute("openai/gpt-4.1")
+    const direct = resolveLlmModelRoute(`openai/${OAI}`)
     expect(direct).toBeDefined()
     expect(direct!.route).toBe("openai")
     expect(direct!.pricing.provider).not.toBe("requesty")
@@ -420,24 +454,24 @@ describe("resolveLlmModelRoute", () => {
   it("resolves an OpenCode Go ref whose route IS its leading segment", () => {
     // The Go tables are keyed `<provider>/<bare-id>`, so `route === vendor`
     // for every ref — which is why the OpenCode branch has to run BEFORE the
-    // direct-vendor branch. `glm-5.3` has no direct vendor route at all.
-    const route = resolveLlmModelRoute("opencode-go/glm-5.3")
+    // direct-vendor branch.
+    const route = resolveLlmModelRoute(GO_ID)
     expect(route).toBeDefined()
     expect(route!.route).toBe("opencode-go")
     expect(route!.transport.flavor).toBe("opencode-go")
     expect(route!.transport.baseUrl).toBe("https://opencode.ai/zen/go/v1")
     expect(route!.pricing.provider).toBe("opencode-go")
     // `vendor` is the model's BUILDER, independent of the billing rail.
-    expect(route!.pricing.vendor).toBe("z-ai")
+    expect(route!.pricing.vendor).toBe(OPENCODE_GO_ROUTES[GO_ID]!.vendor)
     // An explicit `@opencode-go` suffix is redundant but must resolve the same.
-    expect(resolveLlmModelRoute("opencode-go/glm-5.3@opencode-go")?.pricing).toBe(
+    expect(resolveLlmModelRoute(`${GO_ID}@opencode-go`)?.pricing).toBe(
       route!.pricing,
     )
   })
 
   it("prices the SAME Claude model differently on Zen than direct Anthropic", () => {
-    const direct = resolveLlmModelRoute("claude-sonnet-4-6")
-    const zen = resolveLlmModelRoute("opencode/claude-sonnet-4-6")
+    const direct = resolveLlmModelRoute(CLAUDE)
+    const zen = resolveLlmModelRoute(`opencode/${CLAUDE}`)
     expect(direct).toBeDefined()
     expect(zen).toBeDefined()
     expect(direct!.route).toBe("anthropic")
@@ -451,15 +485,21 @@ describe("resolveLlmModelRoute", () => {
 
   it("keeps the direct vendor route unchanged by the OpenCode tables", () => {
     // Regression guard, same class as the Requesty one: OPENCODE_ZEN_ROUTES
-    // carries `claude-sonnet-5`, `gpt-5.4` and `kimi-k3` under BARE product
-    // ids. Spread into LLM_PRICING_CATALOG, those would silently repoint
+    // carries first-party products (Anthropic, OpenAI, Moonshot) under BARE
+    // product ids. Spread into LLM_PRICING_CATALOG, those would silently repoint
     // every first-party bare id at OpenCode's router pricing — and that map
     // feeds credit cost. The route lives in the key's leading segment
     // instead, so a bare id keeps meaning direct-vendor.
+    const bareIn = (table: Record<string, unknown>) =>
+      firstWhere(
+        Object.keys(table).filter(id => !id.includes(":") && !id.includes("/")),
+        id => `opencode/${id}` in OPENCODE_ZEN_ROUTES,
+        "first-party product served by Zen"
+      )
     for (const [bare, provider] of [
-      ["claude-sonnet-5", "anthropic"],
-      ["gpt-5.4", "openai"],
-      ["kimi-k3", "moonshot"],
+      [bareIn(ANTHROPIC_GENERATED_PRICING), "anthropic"],
+      [bareIn(OPENAI_GENERATED_PRICING), "openai"],
+      [bareIn(MOONSHOT_GENERATED_PRICING), "moonshot"],
     ] as const) {
       const direct = resolveLlmModelRoute(bare)
       expect(direct, bare).toBeDefined()
@@ -471,7 +511,13 @@ describe("resolveLlmModelRoute", () => {
     // Go-only and Zen-only ids do NOT leak across the two endpoints.
     expect(resolveLlmModelRoute("opencode-go/nonexistent-model")).toBeUndefined()
     expect(resolveLlmModelRoute("opencode/ox-alpha-free")).toBeUndefined()
-    expect(resolveLlmModelRoute("opencode-go/claude-sonnet-4-6")).toBeUndefined()
+    // A Go-only id never resolves on the Zen endpoint: swap the prefix.
+    const goOnly = Object.keys(OPENCODE_GO_ROUTES).find(
+      id => !(`opencode/${id.replace(/^opencode-go\//, "")}` in OPENCODE_ZEN_ROUTES)
+    )
+    if (goOnly) {
+      expect(resolveLlmModelRoute(goOnly.replace(/^opencode-go\//, "opencode/"))).toBeUndefined()
+    }
   })
 
   it("enumerates each OpenCode endpoint's full surface with bare, spawnable ids", () => {
@@ -489,9 +535,9 @@ describe("resolveLlmModelRoute", () => {
     expect(zen.length).toBeGreaterThan(50)
     // No `@route` annotation: route === vendor, so `formatModelRef` drops it
     // and the enumerated id is exactly what a caller passes to `agent_start`.
-    expect(go.map(r => formatModelRef(r.ref))).toContain("opencode-go/glm-5.3")
+    expect(go.map(r => formatModelRef(r.ref))).toContain(GO_ID)
     expect(go.every(r => !formatModelRef(r.ref).includes("@"))).toBe(true)
-    expect(zen.map(r => formatModelRef(r.ref))).toContain("opencode/claude-opus-5")
+    expect(zen.map(r => formatModelRef(r.ref))).toContain(ZEN_ID)
   })
 
   it("resolves registered custom route", () => {
@@ -506,7 +552,7 @@ describe("resolveLlmModelRoute", () => {
     }
     registerCustomRoute("agentik-proxy", config)
 
-    const route = resolveLlmModelRoute("openai/gpt-4o@agentik-proxy")
+    const route = resolveLlmModelRoute(`openai/${OAI}@agentik-proxy`)
     expect(route).toBeDefined()
     expect(route!.route).toBe("agentik-proxy")
     expect(route!.transport.flavor).toBe("openai")
@@ -519,15 +565,16 @@ describe("resolveLlmModelRoute", () => {
 
   it("custom route falls back to product pricing when no override given", () => {
     registerCustomRoute("agentik-proxy", { flavor: "openai" })
-    const route = resolveLlmModelRoute("openai/gpt-4o@agentik-proxy")
+    const direct = resolveLlmModelRoute(`openai/${OAI}`)!
+    const route = resolveLlmModelRoute(`openai/${OAI}@agentik-proxy`)
     expect(route).toBeDefined()
-    expect(route!.pricing.inputPer1M).toBe(2.5)
-    expect(route!.pricing.outputPer1M).toBe(10.0)
+    expect(route!.pricing.inputPer1M).toBe(direct.pricing.inputPer1M)
+    expect(route!.pricing.outputPer1M).toBe(direct.pricing.outputPer1M)
     expect(route!.pricing.provider).toBe("openai")
   })
 
   it("returns undefined for unregistered custom route", () => {
-    const route = resolveLlmModelRoute("openai/gpt-4o@unknown-proxy")
+    const route = resolveLlmModelRoute(`openai/${OAI}@unknown-proxy`)
     expect(route).toBeUndefined()
   })
 
@@ -584,12 +631,12 @@ describe("resolveLlmModelRoute", () => {
   })
 
   it("preserves legacy bare id compatibility", () => {
-    const route = resolveLlmModelRoute("gpt-4o")
+    const route = resolveLlmModelRoute(OAI)
     expect(route).toBeDefined()
     expect(route!.vendor).toBe("openai")
-    expect(route!.product).toBe("gpt-4o")
+    expect(route!.product).toBe(OAI)
     expect(route!.route).toBe("openai")
-    expect(route!.ref.raw).toBe("gpt-4o")
+    expect(route!.ref.raw).toBe(OAI)
   })
 
   it("returns undefined for unknown bare id", () => {
@@ -605,27 +652,45 @@ describe("resolveLlmModelRoute", () => {
     expect(route!.route).toBe("openrouter")
   })
 
-  // "google/gemma-4-31B-it" (real committed snapshot row, verified
-  // 2026-07-18): 5 live providers — novita/together/deepinfra priced +
-  // context 262144, cerebras/featherless-ai live but sparse (no
-  // pricing/context at all).
+  // The HuggingFace table is regenerated from the live router on every
+  // catalog sync, so provider membership per model drifts (providers drop or
+  // add models, or start reporting pricing/context for rows that were sparse).
+  // Hardcoding a real model + provider pair made this suite go red on data
+  // refreshes, so it runs against a synthetic row installed for the duration
+  // of the block. The resolver behaviour asserted is unchanged.
   describe("HuggingFace route", () => {
+    const FIXTURE_ID = "fixture-org/fixture-model-31B"
+    const fixture: HuggingFaceRoute = {
+      wireId: FIXTURE_ID,
+      providers: [
+        {
+          provider: "fixture-pricey",
+          status: "live",
+          contextLength: 262144,
+          inputPer1M: 0.5,
+          outputPer1M: 1.5,
+        },
+        {
+          provider: "fixture-cheap",
+          status: "live",
+          contextLength: 131072,
+          inputPer1M: 0.1,
+          outputPer1M: 0.3,
+        },
+        // Live but carries no pricing/context_length at all.
+        { provider: "fixture-sparse", status: "live" },
+      ],
+    }
+
+    beforeAll(() => {
+      HUGGINGFACE_ROUTES[FIXTURE_ID] = fixture
+    })
+    afterAll(() => {
+      delete HUGGINGFACE_ROUTES[FIXTURE_ID]
+    })
+
     it("prices from the cheapest live provider when no inferenceProvider pin is given", () => {
-      const model = HUGGINGFACE_ROUTES["google/gemma-4-31B-it"]!
-      const pricedProviders = model.providers.filter(
-        (provider) => provider.inputPer1M !== undefined && provider.outputPer1M !== undefined
-      )
-      const cheapestProvider = pricedProviders.reduce((cheapest, provider) =>
-        provider.inputPer1M! + provider.outputPer1M! <
-        cheapest.inputPer1M! + cheapest.outputPer1M!
-          ? provider
-          : cheapest
-      )
-      const contextWindow = model.providers.reduce<number | undefined>((max, provider) => {
-        if (provider.contextLength === undefined) return max
-        return max === undefined ? provider.contextLength : Math.max(max, provider.contextLength)
-      }, undefined)
-      const route = resolveLlmModelRoute("google/gemma-4-31B-it@huggingface")
+      const route = resolveLlmModelRoute(`${FIXTURE_ID}@huggingface`)
       expect(route).toBeDefined()
       expect(route!.route).toBe("huggingface")
       expect(route!.transport).toEqual({
@@ -633,38 +698,39 @@ describe("resolveLlmModelRoute", () => {
         baseUrl: "https://router.huggingface.co/v1",
       })
       expect(route!.pricing.provider).toBe("huggingface")
-      expect(route!.pricing.vendor).toBe("google")
-      expect(route!.pricing.inputPer1M).toBe(cheapestProvider.inputPer1M)
-      expect(route!.pricing.outputPer1M).toBe(cheapestProvider.outputPer1M)
-      expect(route!.limits.contextWindow).toBe(contextWindow)
+      expect(route!.pricing.vendor).toBe("fixture-org")
+      expect(route!.pricing.inputPer1M).toBe(0.1)
+      expect(route!.pricing.outputPer1M).toBe(0.3)
+      // Largest context across providers.
+      expect(route!.limits.contextWindow).toBe(262144)
     })
 
     it("prices from the pinned inferenceProvider when the pin is a priced provider", () => {
-      const novita = HUGGINGFACE_ROUTES["google/gemma-4-31B-it"]!.providers.find(
-        (provider) => provider.provider === "novita"
-      )!
-      const route = resolveLlmModelRoute("google/gemma-4-31B-it:novita@huggingface")
+      const route = resolveLlmModelRoute(`${FIXTURE_ID}:fixture-pricey@huggingface`)
       expect(route).toBeDefined()
-      expect(route!.pricing.inputPer1M).toBe(novita.inputPer1M)
-      expect(route!.pricing.outputPer1M).toBe(novita.outputPer1M)
-      expect(route!.limits.contextWindow).toBe(novita.contextLength)
+      expect(route!.pricing.inputPer1M).toBe(0.5)
+      expect(route!.pricing.outputPer1M).toBe(1.5)
+      expect(route!.limits.contextWindow).toBe(262144)
     })
 
     it("falls back to default pricing and no context limit for a pinned sparse provider", () => {
-      // featherless-ai is live but carries no pricing/context_length for this
-      // model. (Was cerebras until it started reporting both — repointed rather
-      // than relaxed, so the fallback path stays covered.)
-      const route = resolveLlmModelRoute(
-        "google/gemma-4-31B-it:featherless-ai@huggingface"
-      )
+      const route = resolveLlmModelRoute(`${FIXTURE_ID}:fixture-sparse@huggingface`)
       expect(route).toBeDefined()
       expect(route!.pricing.provider).toBe("huggingface")
       expect(route!.limits.contextWindow).toBeUndefined()
     })
 
     it("returns undefined when the pinned inferenceProvider does not serve the model", () => {
-      const route = resolveLlmModelRoute("google/gemma-4-31B-it:groq@huggingface")
-      expect(route).toBeUndefined()
+      expect(
+        resolveLlmModelRoute(`${FIXTURE_ID}:fixture-absent@huggingface`)
+      ).toBeUndefined()
+    })
+
+    it("resolves a real table row without a pin (smoke against live data)", () => {
+      const [id] = Object.keys(HUGGINGFACE_ROUTES).filter((k) => k !== FIXTURE_ID)
+      expect(id).toBeDefined()
+      const route = resolveLlmModelRoute(`${id}@huggingface`)
+      expect(route?.route).toBe("huggingface")
     })
 
     it("returns undefined for an unknown HuggingFace model", () => {
@@ -691,24 +757,22 @@ describe("listRouterLlmRoutes", () => {
     const routes = listRouterLlmRoutes("requesty")
     expect(routes.length).toBeGreaterThan(0)
     expect(routes.every(r => r.route === "requesty")).toBe(true)
-    // A region-qualified azure key (`azure/gpt-4.1-mini@eastus2`) packs a
-    // second `@` into the product, which collides with the `@route` suffix
-    // and can't round-trip through parseModelRef's single-`@` grammar — it's
-    // skipped rather than crashing enumeration. The unqualified sibling
-    // (`azure/gpt-4.1`, no region) has no such collision and DOES resolve.
-    expect(routes.some(r => r.vendor === "azure" && r.product === "gpt-4.1-mini")).toBe(false)
-    expect(routes.some(r => r.vendor === "azure" && r.product === "gpt-4.1")).toBe(true)
-    // `deepinfra/<upstream>/<model>` nests an upstream provider ahead of
-    // vendor/product (e.g. `deepinfra/Qwen/Qwen3-235B-A22B`) — that
-    // triple-segment shape doesn't round-trip, since its "product" would
-    // still contain a `/`. Not every `deepinfra/…` key has this shape
-    // though: some list a model directly under the vendor
-    // (`deepinfra/glm-5.3-flash`), which resolves cleanly as
-    // vendor="deepinfra", product="glm-5.3-flash".
-    expect(routes.some(r => r.vendor === "deepinfra" && r.product === "Qwen/Qwen3-235B-A22B")).toBe(
-      false
-    )
-    expect(routes.some(r => r.vendor === "deepinfra" && r.product === "glm-5.3-flash")).toBe(true)
+    // A key packing a second `@` into the product (region-qualified, e.g.
+    // `azure/<model>@<region>`) collides with the `@route` suffix and can't
+    // round-trip through parseModelRef's single-`@` grammar; a key nesting an
+    // upstream provider (`<a>/<b>/<model>`) leaves a `/` in its product. Both
+    // are skipped rather than crashing enumeration, while a plain
+    // `vendor/product` key resolves. Asserted against whichever keys the
+    // synced table carries, so retirements can't pin this test.
+    const listed = new Set(routes.map(r => `${r.vendor}/${r.product}`))
+    const keys = Object.keys(REQUESTY_ROUTES)
+    for (const key of keys.filter(k => k.includes("@") || k.split("/").length > 2)) {
+      expect(listed.has(key), key).toBe(false)
+    }
+    const plain = keys.filter(k => !k.includes("@") && k.split("/").length === 2)
+    expect(plain.length).toBeGreaterThan(0)
+    expect(routes.length).toBeLessThanOrEqual(keys.length)
+    expect(plain.filter(k => listed.has(k)).length).toBeGreaterThan(0)
   })
 
   it("resolves every HuggingFace route table entry", () => {
@@ -729,7 +793,7 @@ describe("diagnoseModelRef", () => {
   })
 
   it("reports direct and OpenRouter availability for ambiguous vendor/product", () => {
-    const diag = diagnoseModelRef("openai/gpt-4o")
+    const diag = diagnoseModelRef(`openai/${OAI}`)
     expect(diag).toBeDefined()
     expect(diag!.directAvailable).toBe(true)
     expect(diag!.openRouterAvailable).toBe(true)
@@ -738,7 +802,7 @@ describe("diagnoseModelRef", () => {
   })
 
   it("reports legacy bare id note", () => {
-    const diag = diagnoseModelRef("gpt-4o")
+    const diag = diagnoseModelRef(OAI)
     expect(diag).toBeDefined()
     expect(diag!.legacyBareId).toBe(true)
     expect(diag!.note).toContain("legacy form")
@@ -746,7 +810,7 @@ describe("diagnoseModelRef", () => {
 
   it("reports custom route availability", () => {
     registerCustomRoute("agentik-proxy", { flavor: "openai" })
-    const diag = diagnoseModelRef("openai/gpt-4o@agentik-proxy")
+    const diag = diagnoseModelRef(`openai/${OAI}@agentik-proxy`)
     expect(diag).toBeDefined()
     expect(diag!.customRouteAvailable).toBe(true)
   })

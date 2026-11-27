@@ -154,19 +154,56 @@ jobs:
           XAI_API_KEY: ${{ secrets.XAI_API_KEY }}
         run: pnpm catalog:sync-native
 
-      # Some synced prices are asserted by snapshot rather than by a hardcoded
-      # pin (the OpenRouter-routed Kimi rows — see
-      # packages/model-catalog/src/__tests__/catalog.test.ts), precisely so
-      # that drift reads as a reviewable diff instead of a red CI pin. That
-      # only works if something rewrites the snapshot when the generated file
-      # moves: the test's own comment claimed this job did, but nothing did,
-      # so every sync touching a snapshotted price opened a PR that was red on
-      # arrival (#1313: kimi-k3 3/15 → 2.648138/13.282724). `-u` rewrites
-      # snapshots only — a real generator bug (wrong vendor/provider, a
-      # pricing shape that vanished) is asserted by hardcoded expectations and
-      # still fails here, and again on the PR's own Build + test.
-      - name: Refresh catalog test snapshots
-        run: pnpm --filter @agentproto/model-catalog exec vitest run -u
+      # The model-catalog suite runs against the freshly regenerated data. The
+      # tests are written to be independent of it (fixtures, or subjects picked
+      # from the tables as they are), so a failure here means one of:
+      #   - a generator regressed (wrong vendor/provider, a shape that vanished);
+      #   - a test still hard-codes a model/provider/price (fix the test);
+      #   - a `*.drift.test.ts` check fired: those are the deliberate,
+      #     data-dependent covenants (e.g. the curated audio overlay vs the
+      #     synced roster) and they are *meant* to flag upstream retirements.
+      # None of those may kill this job before the PR exists — the sync PR is
+      # exactly where the drifted data gets reviewed. So the step never fails:
+      # it records the outcome, annotates the run, and the PR description
+      # carries the failing tests (see "Open sync PR" below). The PR's own
+      # Build + test still gates the merge.
+      - name: Run catalog tests against regenerated data
+        id: tests
+        run: |
+          report="$RUNNER_TEMP/catalog-test-report.md"
+          : > "$report"
+          run_suite() {
+            title="$1"; shift
+            log="$RUNNER_TEMP/$(echo "$title" | tr -c 'a-z0-9' '-').log"
+            # GitHub's default shell is `bash -e`: a bare failing command would
+            # abort the step before the outcome is recorded, so branch on it.
+            if pnpm --filter @agentproto/model-catalog exec vitest run "$@" > "$log" 2>&1; then
+              code=0
+            else
+              code=$?
+            fi
+            if [ "$code" -ne 0 ]; then
+              {
+                echo "### $title: FAILED (exit $code)"
+                echo
+                echo '```'
+                { grep -E '^( FAIL |AssertionError|Error:| ❯ | +→ )' "$log" || true; } | head -40 || true
+                echo '```'
+                echo
+              } >> "$report"
+              echo "::warning title=catalog tests::$title failed against regenerated data (see the sync PR description)"
+            fi
+          }
+          # Regular tests first, then the deliberate drift checks.
+          run_suite "Catalog tests" --exclude '**/*.drift.test.ts'
+          run_suite "Drift checks" '.drift.test.ts'
+          if [ -s "$report" ]; then
+            echo "failed=true" >> "$GITHUB_OUTPUT"
+            cat "$report" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "failed=false" >> "$GITHUB_OUTPUT"
+          fi
+          exit 0
 
       # The OTHER catalog, part two: the embedded first-party APP catalog
       # (packages/runtime/src/first-party-catalog.ts) — the offline fallback
@@ -209,6 +246,32 @@ jobs:
       # `--check` must stay green on every normal PR/CI run (committed
       # snapshots ⇒ committed generated files). This job is the *producer* of
       # that truth: it opens a PR whenever the upstream sources have drifted.
+      - name: Compose sync PR description
+        if: steps.drift.outputs.changed == 'true'
+        run: |
+          {
+            echo 'Automated catalog regeneration from the pinned provider sources via'
+            echo '`@agentproto/catalog-sync`.'
+            echo
+            echo '- Generated `*.generated.ts` (and refreshed snapshots, if `--refresh`)'
+            echo '  now differ from `main`.'
+            echo '- Review the diff as you would any pricing/model change, then merge.'
+            echo '- This data is **generated, not hand-edited** — to change it, change'
+            echo '  the generator or the pinned source, never the output file.'
+            if [ "${{ steps.tests.outputs.failed }}" = "true" ]; then
+              echo
+              echo '## ⚠️ Catalog tests failed against this data'
+              echo
+              echo 'The sync PR is opened anyway so the drift can be reviewed; the failure is'
+              echo 'reported here instead of aborting the run. A `*.drift.test.ts` failure is a'
+              echo 'deliberate flag (upstream retired something a curated list still names);'
+              echo 'anything else means a generator regression or a test that still depends on'
+              echo 'a specific model.'
+              echo
+              cat "$RUNNER_TEMP/catalog-test-report.md"
+            fi
+          } > "$RUNNER_TEMP/pr-body.md"
+
       - name: Open sync PR
         if: steps.drift.outputs.changed == 'true'
         uses: peter-evans/create-pull-request@v7
@@ -218,15 +281,7 @@ jobs:
           base: main
           commit-message: "chore(catalog): sync generated data from pinned sources"
           title: "chore(catalog): sync generated catalog data"
-          body: |
-            Automated catalog regeneration from the pinned provider sources via
-            `@agentproto/catalog-sync`.
-
-            - Generated `*.generated.ts` (and refreshed snapshots, if `--refresh`)
-              now differ from `main`.
-            - Review the diff as you would any pricing/model change, then merge.
-            - This data is **generated, not hand-edited** — to change it, change
-              the generator or the pinned source, never the output file.
+          body-path: ${{ runner.temp }}/pr-body.md
           labels: |
             catalog-sync
             automated

@@ -1,5 +1,8 @@
-import { describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { OPENCODE_ZEN_ROUTES } from "../../llm/opencode-zen-routes.generated.js"
+import { CONTEXT_WINDOWS } from "../../llm/context-windows.generated.js"
+import { clearCatalogOverlays, registerCatalogOverlay } from "../../overlay/index.js"
+import { listModels } from "../../registry/index.js"
 import {
   ModelListError,
   clearModelListCache,
@@ -10,6 +13,41 @@ import {
   type ModelListSource,
 } from "../index.js"
 
+// Selector subjects are overlay fixtures, not real models: the generated
+// tables are rewritten by every catalog sync, so a real id/price/provider
+// pinned here would break when the sync retires or reprices it. The context
+// and "newest" selectors read synced data (context windows, addedAt), so
+// their subjects are picked from the tables as they are.
+const ZERO = "fixtureprov/zero-llm"
+const CHEAP = "fixtureprov/cheap-llm"
+const PRICEY = "fixtureprov/pricey-llm"
+const PROVIDER = "fixtureprov"
+
+beforeEach(() => {
+  registerCatalogOverlay({
+    llm: {
+      [ZERO]: { inputPer1M: 0, outputPer1M: 0, provider: PROVIDER, vendor: "fixture" } as never,
+      [CHEAP]: { inputPer1M: 0.15, outputPer1M: 0.6, provider: PROVIDER, vendor: "fixture" } as never,
+      [PRICEY]: { inputPer1M: 5, outputPer1M: 15, provider: PROVIDER, vendor: "fixture" } as never,
+    },
+  })
+  clearModelListCache()
+})
+afterEach(() => {
+  clearCatalogOverlays()
+  clearModelListCache()
+})
+
+/** A cataloged id whose synced window is ≥ 1M, and one below it. */
+function contextSubjects(): { big: string; small: string } {
+  const ids = new Set(listModels({ kind: "llm" }).map(m => m.id))
+  const known = Object.entries(CONTEXT_WINDOWS).filter(([id]) => ids.has(id))
+  const big = known.find(([, e]) => e.contextWindow >= 1_000_000)?.[0]
+  const small = known.find(([, e]) => e.contextWindow < 1_000_000)?.[0]
+  if (!big || !small) throw new Error("synced tables expose no big/small context pair")
+  return { big, small }
+}
+
 function sourceOf(...lists: ModelList[]): ModelListSource {
   const byId = new Map(lists.map(list => [list.id, list]))
   return { get: id => byId.get(id) }
@@ -18,17 +56,17 @@ function sourceOf(...lists: ModelList[]): ModelListSource {
 describe("resolveModelList selectors", () => {
   it("matches the access-target vocabulary: model, tag, provider, priceTier, kind", () => {
     const src = sourceOf(
-      { id: "m", include: [{ kind: "model", id: "openai/gpt-4o" }] },
+      { id: "m", include: [{ kind: "model", id: PRICEY }] },
       { id: "t", include: [{ kind: "tag", value: "price:zero" }] },
-      { id: "p", include: [{ kind: "provider", value: "openai" }] },
+      { id: "p", include: [{ kind: "provider", value: PROVIDER }] },
       { id: "tier", include: [{ kind: "priceTier", value: "low" }] },
       { id: "k", include: [{ kind: "kind", value: "llm" }] },
     )
-    expect(resolveModelList("m", src)).toEqual(["openai/gpt-4o"])
-    expect(resolveModelList("t", src)).toContain("opencode/big-pickle")
-    expect(resolveModelList("p", src)).toContain("openai/gpt-4o")
-    expect(resolveModelList("tier", src)).toContain("gpt-4o-mini")
-    expect(resolveModelList("k", src)).toContain("openai/gpt-4o")
+    expect(resolveModelList("m", src)).toEqual([PRICEY])
+    expect(resolveModelList("t", src)).toContain(ZERO)
+    expect(resolveModelList("p", src)).toEqual(expect.arrayContaining([ZERO, CHEAP, PRICEY]))
+    expect(resolveModelList("tier", src)).toContain(CHEAP)
+    expect(resolveModelList("k", src)).toContain(PRICEY)
   })
 
   it("matches price, context and variant selectors", () => {
@@ -37,17 +75,18 @@ describe("resolveModelList selectors", () => {
       { id: "ctx", include: [{ kind: "context", min: 1_000_000 }] },
       { id: "variant", include: [{ kind: "variant", value: "free" }] },
     )
-    expect(resolveModelList("price", src)).toContain("opencode/big-pickle")
-    expect(resolveModelList("price", src)).not.toContain("openai/gpt-4o")
-    expect(resolveModelList("ctx", src)).toContain("claude-fable-5")
-    expect(resolveModelList("ctx", src)).not.toContain("openai/gpt-4o")
+    const { big, small } = contextSubjects()
+    expect(resolveModelList("price", src)).toContain(ZERO)
+    expect(resolveModelList("price", src)).not.toContain(PRICEY)
+    expect(resolveModelList("ctx", src)).toContain(big)
+    expect(resolveModelList("ctx", src)).not.toContain(small)
     // OpenRouter variants are not separate route-table rows, so membership on
     // a variant-suffixed id is the meaningful assertion.
     expect(
-      inModelList("deepseek/deepseek-chat:free@openrouter", "variant", src),
+      inModelList(`${PRICEY}:free@openrouter`, "variant", src),
     ).toBe(true)
     expect(
-      inModelList("deepseek/deepseek-chat@openrouter", "variant", src),
+      inModelList(`${PRICEY}@openrouter`, "variant", src),
     ).toBe(false)
   })
 
@@ -65,11 +104,11 @@ describe("resolveModelList exclusion and ordering", () => {
   it("exclude wins over include and ids", () => {
     const src = sourceOf({
       id: "list",
-      include: [{ kind: "model", id: "openai/gpt-4o" }],
-      ids: ["openai/gpt-4o-mini"],
+      include: [{ kind: "model", id: PRICEY }],
+      ids: [CHEAP],
       exclude: [
-        { kind: "model", id: "openai/gpt-4o" },
-        { kind: "model", id: "openai/gpt-4o-mini" },
+        { kind: "model", id: PRICEY },
+        { kind: "model", id: CHEAP },
       ],
     })
     expect(resolveModelList("list", src)).toEqual([])
@@ -86,63 +125,47 @@ describe("resolveModelList exclusion and ordering", () => {
   })
 
   it("listed keeps insertion order, cheapest / largest-context / newest sort deterministically", () => {
-    // The pins' addedAt is regenerated data: the weekly Catalog Sync rewrites
-    // it and upstream retires ids (glm-5.3-flash-free vanished in the
-    // 2026-11-20 refresh, Catalog Sync run 70). Derive which pin is newer from
-    // the same data instead of hardcoding it; the ordering logic is what is
-    // under test. The guard keeps the assertion non-vacuous.
-    const addedAt = (id: string) => OPENCODE_ZEN_ROUTES[id]?.addedAt ?? ""
-    const [pinOlder, pinNewer] = ["opencode/big-pickle", "opencode/glm-5.3"].sort(
-      (a, b) => addedAt(a).localeCompare(addedAt(b)),
-    ) as [string, string]
-    expect(addedAt(pinNewer) > addedAt(pinOlder)).toBe(true)
+    // "newest" reads the synced addedAt dates: pick the oldest and newest
+    // distinct rows from the table as it is, so retirements/backfills never
+    // pin this test to an id. The guard keeps the assertion non-vacuous.
+    const dated = Object.entries(OPENCODE_ZEN_ROUTES)
+      .filter(([, r]) => (r as { addedAt?: string }).addedAt)
+      .map(([id, r]) => [id, (r as { addedAt: string }).addedAt] as const)
+      .sort((x, y) => x[1].localeCompare(y[1]))
+    const pinOlder = dated[0]![0]
+    const pinNewer = dated[dated.length - 1]![0]
+    expect(dated[dated.length - 1]![1] > dated[0]![1]).toBe(true)
+    const { big, small } = contextSubjects()
     const src = sourceOf(
-      {
-        id: "listed",
-        ids: ["openai/gpt-4o", "openai/gpt-4o-mini"],
-        order: "listed",
-      },
-      {
-        id: "cheapest",
-        ids: ["openai/gpt-4o", "openai/gpt-4o-mini"],
-        order: "cheapest",
-      },
-      {
-        id: "context",
-        ids: ["claude-haiku-4-5", "claude-fable-5"],
-        order: "largest-context",
-      },
-      {
-        id: "newest",
-        ids: [pinOlder, pinNewer],
-        order: "newest",
-      },
+      { id: "listed", ids: [PRICEY, CHEAP], order: "listed" },
+      { id: "cheapest", ids: [PRICEY, CHEAP], order: "cheapest" },
+      { id: "context", ids: [small, big], order: "largest-context" },
+      { id: "newest", ids: [pinOlder, pinNewer], order: "newest" },
     )
-    expect(resolveModelList("listed", src)).toEqual([
-      "openai/gpt-4o",
-      "openai/gpt-4o-mini",
-    ])
-    expect(resolveModelList("cheapest", src)[0]).toBe("openai/gpt-4o-mini")
-    expect(resolveModelList("context", src)[0]).toBe("claude-fable-5")
+    expect(resolveModelList("listed", src)).toEqual([PRICEY, CHEAP])
+    expect(resolveModelList("cheapest", src)[0]).toBe(CHEAP)
+    expect(resolveModelList("context", src)[0]).toBe(big)
     expect(resolveModelList("newest", src)[0]).toBe(pinNewer)
   })
 
   it("memoizes subject ids and clears them with the candidate cache", () => {
     const src = sourceOf({ id: "pins", ids: ["custom/model"] })
-    expect(inModelList("big-pickle", "pins", src)).toBe(false)
-    expect(inModelList("big-pickle", "pins", src)).toBe(false)
+    const full = Object.keys(OPENCODE_ZEN_ROUTES)[0]!
+    const bareId = full.replace(/^opencode\//, "")
+    expect(inModelList(bareId, "pins", src)).toBe(false)
+    expect(inModelList(bareId, "pins", src)).toBe(false)
     clearModelListCache()
-    expect(inModelList("big-pickle", "pins", src)).toBe(false)
-    const bare = sourceOf({ id: "bare", ids: ["opencode/big-pickle"] })
-    expect(inModelList("big-pickle", "bare", bare)).toBe(true)
+    expect(inModelList(bareId, "pins", src)).toBe(false)
+    const bare = sourceOf({ id: "bare", ids: [full] })
+    expect(inModelList(bareId, "bare", bare)).toBe(true)
     clearModelListCache()
-    expect(inModelList("big-pickle", "bare", bare)).toBe(true)
+    expect(inModelList(bareId, "bare", bare)).toBe(true)
   })
 
   it("an uncataloged id matches through ids only", () => {
     const src = sourceOf(
       { id: "pins", ids: ["custom/model"] },
-      { id: "models", include: [{ kind: "model", id: "openai/gpt-4o" }] },
+      { id: "models", include: [{ kind: "model", id: PRICEY }] },
     )
     expect(inModelList("custom/model", "pins", src)).toBe(true)
     expect(inModelList("custom/model@route", "pins", src)).toBe(true)
@@ -171,7 +194,7 @@ describe("resolveModelList errors and explanation", () => {
     })
     const explained = explainModelList("zero-cost", src)
     expect(explained).toContainEqual({
-      model: "opencode/big-pickle",
+      model: ZERO,
       via: "tag:price:zero",
     })
     expect(explained).toContainEqual({ model: "custom/model", via: "ids" })
