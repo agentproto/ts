@@ -107,9 +107,9 @@ export async function runDaemon(args: readonly string[]): Promise<number> {
     return 2
   }
   const sub = args[0]
-  const forceService = args.includes("--force-service")
-  const rest = args.slice(1).filter(a => a !== "--force-service")
-  if ((sub === "stop" || sub === "restart" || sub === "uninstall") && !forceService) {
+  const guarded = sub === "stop" || sub === "restart" || sub === "uninstall"
+  const rest = guarded ? args.slice(1).filter(a => a !== "--force-service") : args.slice(1)
+  if (guarded && !args.includes("--force-service")) {
     const refusal = await checkServiceOwnership(sub)
     if (refusal) {
       process.stderr.write(refusal)
@@ -141,18 +141,20 @@ export async function runDaemon(args: readonly string[]): Promise<number> {
   }
 }
 
-/** Default daemon port (`agentproto serve` and the service definition). */
-const DEFAULT_DAEMON_PORT = 18790
-
 export interface ServiceOwnershipInput {
   /** HOME this process runs under (`$HOME`, which a test daemon overrides). */
   currentHome: string
   /** Home directory of the OS user — where the registered service lives. */
   serviceHome: string
-  /** Port this invocation's config / environment points at. */
-  currentPort: number
-  /** Port the registered service was installed with. */
-  servicePort: number
+  /**
+   * Port this invocation explicitly targets (`AGENTPROTO_DAEMON_URL` on
+   * loopback), or null when none. The `daemon.port` config key is NOT used:
+   * it can legitimately change after install, and stop/restart address the
+   * service by label, not by port.
+   */
+  currentPort: number | null
+  /** Port the registered service was installed with, or null when unknown. */
+  servicePort: number | null
 }
 
 /**
@@ -167,7 +169,12 @@ export function evaluateServiceOwnership(
   input: ServiceOwnershipInput,
 ): string | null {
   const homeDiffers = input.currentHome !== input.serviceHome
-  const portDiffers = input.currentPort !== input.servicePort
+  // An unknown side (no explicit target, or no readable service definition,
+  // e.g. the Windows task or the Linux pidfile fallback) is never a mismatch.
+  const portDiffers =
+    input.currentPort !== null &&
+    input.servicePort !== null &&
+    input.currentPort !== input.servicePort
   if (!homeDiffers && !portDiffers) return null
   const what = [
     homeDiffers ? `HOME ${input.currentHome} (service: ${input.serviceHome})` : null,
@@ -181,7 +188,7 @@ export function evaluateServiceOwnership(
     }: ${what}.\n` +
     "The service is per-user, so this would stop the registered service, not a daemon you " +
     "started under a different HOME or port. Stop that one by its pid or with " +
-    "`pkill -f \"serve --port <port>\"`, or pass --force-service to target the service anyway.\n"
+    `\`pkill -f "serve --port ${portDiffers ? input.currentPort : "<port>"}"\`, or pass --force-service to target the service anyway.\n`
   )
 }
 
@@ -198,37 +205,44 @@ async function checkServiceOwnership(verb: string): Promise<string | null> {
   } catch {
     /* no passwd entry (containers): fall back to the current home */
   }
-  const currentHome = homedir()
+  // An `AGENTPROTO_HOME` pointing away from the service's state directory is
+  // the documented isolation override, same as a different HOME.
+  const stateDir = process.env.AGENTPROTO_HOME
+  const currentHome =
+    stateDir && stateDir !== join(serviceHome, ".agentproto") ? stateDir : homedir()
   const definition = osPlatform() === "darwin"
     ? launchdPlistPath(serviceHome)
     : osPlatform() === "linux"
       ? systemdUnitPath(serviceHome)
-      : null
-  let servicePort = DEFAULT_DAEMON_PORT
+      : osPlatform() === "win32"
+        ? schtasksTaskScriptPath(serviceHome)
+        : null
+  let servicePort: number | null = null
   if (definition) {
     try {
-      servicePort = parseServicePort(await fs.readFile(definition, "utf8")) ?? DEFAULT_DAEMON_PORT
+      servicePort = parseServicePort(await fs.readFile(definition, "utf8"))
     } catch {
-      /* no readable definition: assume the default port */
+      /* no readable definition (e.g. Linux pidfile fallback): port unknown */
     }
   }
-  let currentPort = DEFAULT_DAEMON_PORT
-  try {
-    const cfg = await loadConfig()
-    if (typeof cfg.daemon?.port === "number") currentPort = cfg.daemon.port
-  } catch {
-    /* unreadable config: default port */
-  }
+  let currentPort: number | null = null
   const url = process.env.AGENTPROTO_DAEMON_URL
   if (url) {
     try {
-      const port = Number(new URL(url).port)
-      if (port) currentPort = port
+      const u = new URL(url)
+      if (["127.0.0.1", "localhost", "[::1]"].includes(u.hostname) && u.port) {
+        currentPort = Number(u.port)
+      }
     } catch {
       /* ignore a malformed URL; discovery reports it elsewhere */
     }
   }
-  return evaluateServiceOwnership(verb, { currentHome, serviceHome, currentPort, servicePort })
+  return evaluateServiceOwnership(verb, {
+    currentHome,
+    serviceHome,
+    currentPort,
+    servicePort,
+  })
 }
 
 interface Paths {

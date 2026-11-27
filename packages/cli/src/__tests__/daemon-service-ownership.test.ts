@@ -32,6 +32,17 @@ describe("evaluateServiceOwnership", () => {
     expect(msg).toMatch(/18791/)
   })
 
+  it("never treats an unknown port as a mismatch (no explicit target, or no readable definition)", () => {
+    expect(evaluateServiceOwnership("stop", { ...SAME, currentPort: null })).toBeNull()
+    expect(evaluateServiceOwnership("stop", { ...SAME, servicePort: null })).toBeNull()
+  })
+
+  it("puts the real port in the pkill hint", () => {
+    expect(evaluateServiceOwnership("stop", { ...SAME, currentPort: 18791 })).toMatch(
+      /pkill -f "serve --port 18791"/,
+    )
+  })
+
   it("names both when HOME and port differ", () => {
     const msg = evaluateServiceOwnership("uninstall", {
       ...SAME,
@@ -58,6 +69,19 @@ describe("runDaemon guard wiring", () => {
   afterEach(() => {
     process.env.HOME = realHome
     vi.restoreAllMocks()
+  })
+
+  it("treats AGENTPROTO_HOME pointing away from the service state dir as another home", async () => {
+    const prev = process.env.AGENTPROTO_HOME
+    process.env.AGENTPROTO_HOME = "/tmp/agentproto-test-state-does-not-exist"
+    const err = vi.spyOn(process.stderr, "write").mockImplementation(() => true)
+    try {
+      expect(await runDaemon(["stop"])).toBe(1)
+      expect(err.mock.calls.map(c => String(c[0])).join("")).toMatch(/not the daemon of this HOME/)
+    } finally {
+      if (prev === undefined) delete process.env.AGENTPROTO_HOME
+      else process.env.AGENTPROTO_HOME = prev
+    }
   })
 
   it("exits non-zero and acts on nothing when HOME differs from the OS user's", async () => {
