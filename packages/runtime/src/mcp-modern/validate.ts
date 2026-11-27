@@ -54,6 +54,16 @@ export function acceptsJson(accept: string | undefined): boolean {
   })
 }
 
+// True when `Accept` allows an SSE response (`events/stream`). The any-type and `text/` wildcards allow it, as in
+// `acceptsJson`.
+export function acceptsEventStream(accept: string | undefined): boolean {
+  if (accept === undefined) return false
+  return accept.split(",").some(part => {
+    const type = (part.split(";")[0] ?? "").trim().toLowerCase()
+    return type === "text/event-stream" || type === "text/*" || type === "*/*"
+  })
+}
+
 export function isJsonContentType(contentType: string | undefined): boolean {
   if (contentType === undefined) return false
   return (contentType.split(";")[0] ?? "").trim().toLowerCase() === "application/json"

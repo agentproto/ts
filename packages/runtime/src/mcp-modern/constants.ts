@@ -65,6 +65,7 @@ export const NAME_HEADER_SOURCE: ReadonlyMap<string, "name" | "uri" | "taskId"> 
   ["tools/call", "name"],
   // SEP-3415: every events method but `events/list` names its event type in `Mcp-Name`.
   ["events/poll", "name"],
+  ["events/stream", "name"],
   ["events/subscribe", "name"],
   ["events/unsubscribe", "name"],
   ["prompts/get", "name"],
@@ -73,6 +74,9 @@ export const NAME_HEADER_SOURCE: ReadonlyMap<string, "name" | "uri" | "taskId"> 
   ["tasks/update", "taskId"],
   ["tasks/cancel", "taskId"],
 ])
+
+/** Push delivery of the Events extension: answered by the modern core itself as an SSE stream, only while enabled. */
+export const EVENTS_STREAM_METHOD = "events/stream"
 
 /** Methods of the Tasks extension: answered by the modern core itself, only while the extension is enabled. */
 export const TASK_EXTENSION_METHODS: readonly string[] = ["tasks/get", "tasks/update", "tasks/cancel"]

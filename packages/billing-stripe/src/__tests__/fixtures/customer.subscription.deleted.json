@@ -1,0 +1,24 @@
+{
+  "id": "evt_1Ex0SubscriptionDeleted0001",
+  "object": "event",
+  "api_version": "2026-11-18.endive",
+  "created": 1798372800,
+  "livemode": false,
+  "pending_webhooks": 1,
+  "request": { "id": null, "idempotency_key": null },
+  "type": "customer.subscription.deleted",
+  "data": {
+    "object": {
+      "id": "sub_1Ex0Subscription0001",
+      "object": "subscription",
+      "cancel_at_period_end": false,
+      "canceled_at": 1798372800,
+      "cancellation_details": { "comment": null, "feedback": null, "reason": "cancellation_requested" },
+      "customer": "cus_Ex0Customer0001",
+      "ended_at": 1798372800,
+      "livemode": false,
+      "metadata": { "agentproto_offer": "plan-month", "agentproto_owner_orgId": "acme" },
+      "status": "canceled"
+    }
+  }
+}

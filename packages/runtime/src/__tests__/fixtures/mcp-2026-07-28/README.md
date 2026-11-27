@@ -19,3 +19,14 @@ Also read for the contract test, without a fixture of their own:
 
 The spec index (https://modelcontextprotocol.io/llms.txt) lists no `events/*` page for 2026-07-28, so
 there are no `events/list|subscribe|unsubscribe` fixtures.
+
+The `events/stream` (push delivery) fixtures come from the Events extension text, beta, at commit `c77b8439`
+(https://github.com/modelcontextprotocol/ext-events/blob/c77b84395eff0ae32f53b0516c2214fe276ed050/specification/beta/events/events.mdx).
+Retrieved 2026-11-26. Each `_source` names the section anchor.
+
+| File | Section |
+|---|---|
+| `events-stream-request.json` | `#request-events-stream` |
+| `events-active.json`, `events-event.json`, `events-error.json`, `events-stream-result.json` | `#event-delivery` |
+| `events-heartbeat.json` | `#lifecycle` |
+| `events-terminated.json` | `#subscription-termination` |

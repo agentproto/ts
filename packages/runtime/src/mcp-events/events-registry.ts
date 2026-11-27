@@ -259,7 +259,9 @@ function githubEvent(input: {
     definition: {
       name: input.name,
       description: input.description,
-      delivery: ["poll", "webhook"],
+      // `push` (`events/stream`) reads the same poll journal; `events/list` hides
+      // it outside the 2026-07-28 era (`pushEnabled`, adapter.ts).
+      delivery: ["poll", "push", "webhook"],
       inputSchema: PR_ARGS_INPUT_SCHEMA as unknown as object,
       payloadSchema: input.payloadSchema,
     },

@@ -1,0 +1,26 @@
+{
+  "id": "evt_3Ex0Disputechargedisputeclosed",
+  "object": "event",
+  "api_version": "2026-11-18.endive",
+  "created": 1796040000,
+  "livemode": false,
+  "pending_webhooks": 1,
+  "request": { "id": null, "idempotency_key": null },
+  "type": "charge.dispute.closed",
+  "data": {
+    "object": {
+      "id": "dp_1Ex0Dispute0001",
+      "object": "dispute",
+      "amount": 2000,
+      "charge": "ch_3Ex0Charge0001",
+      "created": 1796039900,
+      "currency": "eur",
+      "is_charge_refundable": false,
+      "livemode": false,
+      "metadata": {},
+      "payment_intent": "pi_3Ex0Intent0001",
+      "reason": "fraudulent",
+      "status": "lost"
+    }
+  }
+}

@@ -702,6 +702,12 @@ export interface McpConfig {
    */
   eventsExtension?: boolean
   /**
+   * Whether `events/stream` (push delivery over SSE, 2026-07-28 era only) is
+   * served and `"push"` advertised in `events/list`. Defaults to `true`; only
+   * read while `eventsExtension` is on.
+   */
+  eventsStream?: boolean
+  /**
    * Whether pending approvals are projected as `url` elicitations (needs
    * `approvals.uiBaseUrl`). Defaults to `true`; only read when `humanGate` is on.
    */
