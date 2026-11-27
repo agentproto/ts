@@ -192,77 +192,82 @@ export function buildCspMeta(csp: McpAppUiCsp | undefined): string {
   return `<meta http-equiv="Content-Security-Policy" content="${escapeAttribute(buildCspPolicy(csp))}">`
 }
 
-const DOCTYPE = /^\s*<!doctype[^>]*>/i
-const RAW_TEXT_ELEMENTS = new Set(["script", "style", "textarea", "title", "xmp", "iframe", "noembed", "noframes"])
-
-interface TagMatch {
-  index: number
-  end: number
-}
-
 /**
- * First start tag named `name` that the HTML parser would really see: not
- * inside a comment, and not inside a raw-text element (`<script>`, `<style>`,
- * `<textarea>`, `<title>`, …). A regex over the raw bytes is fooled by
- * `<!-- <head> -->` or a `<head>` inside a script string, which would put the
- * CSP meta somewhere the parser ignores it.
+ * Index just past the end of the tag starting at `from` (`<`), honouring
+ * quoted attribute values; -1 when it never closes.
  */
-function findStartTag(html: string, name: string): TagMatch | null {
-  let i = 0
-  while (i < html.length) {
-    const lt = html.indexOf("<", i)
-    if (lt < 0) return null
-    if (html.startsWith("<!--", lt)) {
-      const close = html.indexOf("-->", lt + 4)
-      if (close < 0) return null
-      i = close + 3
-      continue
-    }
-    const m = /^<(\/?)([a-zA-Z][a-zA-Z0-9:-]*)/.exec(html.slice(lt, lt + 64))
-    if (!m) {
-      i = lt + 1
-      continue
-    }
-    const tag = (m[2] ?? "").toLowerCase()
-    // End of the tag, honouring quoted attribute values.
-    let j = lt + m[0].length
-    let quote = ""
-    for (; j < html.length; j++) {
-      const c = html[j]
-      if (quote) {
-        if (c === quote) quote = ""
-      } else if (c === '"' || c === "'") quote = c
-      else if (c === ">") break
-    }
-    const end = Math.min(j + 1, html.length)
-    if (m[1] !== "/" && tag === name) return { index: lt, end }
-    if (m[1] !== "/" && RAW_TEXT_ELEMENTS.has(tag)) {
-      const closeRe = new RegExp(`</${tag}[\\s/>]`, "i")
-      const rest = html.slice(end)
-      const c = closeRe.exec(rest)
-      if (!c) return null
-      i = end + c.index
-      continue
-    }
-    i = end
+function tagEnd(html: string, from: number): number {
+  let quote = ""
+  for (let j = from + 1; j < html.length; j++) {
+    const c = html[j]
+    if (quote) {
+      if (c === quote) quote = ""
+    } else if (c === '"' || c === "'") quote = c
+    else if (c === ">") return j + 1
   }
-  return null
+  return -1
 }
 
 /**
- * Inject the CSP meta as the first child of `<head>`, creating `<head>` when
- * the document has none. A CSP meta the view ships itself is left in place:
- * browsers enforce every policy present, so it can only tighten ours.
+ * Where the CSP meta goes. Only the document PROLOGUE is walked: whitespace,
+ * comments, the doctype, the `<html>` start tag and, if it comes next, the
+ * `<head>` start tag. Nothing after that is interpreted, so author markup
+ * (a `<head>` inside a comment, `<noscript>`, `<template>`, a script string,
+ * an unclosed element…) can never decide where the meta lands: it is always
+ * placed before any author content.
+ */
+function cspInsertionPoint(html: string): { at: number; wrapInHead: boolean } {
+  let i = 0
+  let afterHtml = -1
+  let afterDoctype = 0
+  const skipSpaceAndComments = (): void => {
+    for (;;) {
+      while (i < html.length && /\s/.test(html[i] ?? "")) i++
+      if (html.startsWith("<!--", i)) {
+        const close = html.indexOf("-->", i + 4)
+        if (close < 0) return
+        i = close + 3
+        continue
+      }
+      return
+    }
+  }
+  skipSpaceAndComments()
+  const doctype = /^<!doctype[^>]*>/i.exec(html.slice(i, i + 512))
+  if (doctype) {
+    i += doctype[0].length
+    afterDoctype = i
+    skipSpaceAndComments()
+  }
+  const htmlTag = /^<html(?=[\s/>])/i.exec(html.slice(i, i + 16))
+  if (htmlTag) {
+    const end = tagEnd(html, i)
+    if (end > 0) {
+      i = end
+      afterHtml = end
+      skipSpaceAndComments()
+    }
+  }
+  const headTag = /^<head(?=[\s/>])/i.exec(html.slice(i, i + 16))
+  if (headTag) {
+    const end = tagEnd(html, i)
+    if (end > 0) return { at: end, wrapInHead: false }
+  }
+  if (afterHtml >= 0) return { at: afterHtml, wrapInHead: true }
+  return { at: afterDoctype, wrapInHead: true }
+}
+
+/**
+ * Inject the CSP meta ahead of any author content (see
+ * {@link cspInsertionPoint}): as the first child of `<head>` when the document
+ * opens with one, else in a `<head>` created right after `<html>` / the
+ * doctype. A CSP meta the view ships itself is left in place: browsers enforce
+ * every policy present, so it can only tighten ours.
  */
 export function injectCsp(html: string, csp: McpAppUiCsp | undefined): string {
   const meta = buildCspMeta(csp)
-  const head = findStartTag(html, "head")
-  if (head) return insertAt(html, head.end, meta)
-  const htmlTag = findStartTag(html, "html")
-  if (htmlTag) return insertAt(html, htmlTag.end, `<head>${meta}</head>`)
-  const doctype = DOCTYPE.exec(html)
-  const at = doctype ? doctype[0].length : 0
-  return insertAt(html, at, `<head>${meta}</head>`)
+  const { at, wrapInHead } = cspInsertionPoint(html)
+  return insertAt(html, at, wrapInHead ? `<head>${meta}</head>` : meta)
 }
 
 function insertAt(html: string, index: number, fragment: string): string {

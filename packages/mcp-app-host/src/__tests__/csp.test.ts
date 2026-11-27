@@ -72,10 +72,13 @@ describe("injectCsp", () => {
     )
   })
 
-  it("matches <head> with attributes but not <header>", () => {
-    const html = `<html><header>h</header><head data-x="1"><title>x</title></head></html>`
-    expect(injectCsp(html, undefined)).toBe(
-      `<html><header>h</header><head data-x="1">${meta}<title>x</title></head></html>`,
+  it("matches a leading <head> with attributes, and does not mistake <header> for it", () => {
+    expect(injectCsp(`<html><head data-x="1"><title>x</title></head></html>`, undefined)).toBe(
+      `<html><head data-x="1">${meta}<title>x</title></head></html>`,
+    )
+    // <header> is author content, not <head>: the meta goes in a head created before it.
+    expect(injectCsp(`<html><header>h</header><head data-x="1"></head></html>`, undefined)).toBe(
+      `<html><head>${meta}</head><header>h</header><head data-x="1"></head></html>`,
     )
   })
 
@@ -160,21 +163,37 @@ describe("buildSandboxCspHeader", () => {
   })
 })
 
-describe("injectCsp — the meta lands where the HTML parser will see it", () => {
+describe("injectCsp — the meta lands before any author content", () => {
   const META = buildCspMeta(undefined)
-  it("ignores <head> inside comments and script/style/textarea/title content", () => {
-    for (const html of [
-      "<!-- <head> --><html><head><title>t</title></head><body></body></html>",
-      '<html><script>var s = "<head>"</script><head></head></html>',
-      "<html><style>/* <head> */</style><head></head></html>",
-      "<html><textarea><head></textarea><head></head></html>",
-      "<html><title><head></title><head></head></html>",
-    ]) {
+  const DECOYS = [
+    "<!-- <head> --><html><head><title>t</title></head><body></body></html>",
+    '<html><script>var s = "<head>"</script><head></head></html>',
+    "<html><style>/* <head> */</style><head></head></html>",
+    "<html><textarea><head></textarea><head></head></html>",
+    "<html><title><head></title><head></head></html>",
+    "<html><noscript><head></noscript><head></head></html>",
+    "<html><template><head></template><head></head></html>",
+    "<html><svg><desc><head></desc></svg><head></head></html>",
+    "<!doctype html><select><option><head></select><head></head>",
+    "<!-- unterminated <head>",
+    "<html><body><p>x</p><head></head></body></html>",
+  ]
+
+  it("puts the meta before ANY author markup (only doctype / comments / <html> / a leading <head> may precede it)", () => {
+    for (const html of DECOYS) {
       const out = injectCsp(html, undefined)
-      // Our meta must come right after the REAL <head>, never inside the decoy.
-      const real = out.lastIndexOf("<head>")
-      expect(out.slice(real, real + "<head>".length + META.length), html).toBe(`<head>${META}`)
       expect(out.split(META).length, html).toBe(2)
+      const at = out.indexOf(META)
+      const before = out.slice(0, at)
+      // What precedes the meta is only prologue: doctype, comments, whitespace,
+      // the <html> start tag and an optional <head> start tag.
+      const stripped = before
+        .replace(/<!--[\s\S]*?-->/g, "")
+        .replace(/<!doctype[^>]*>/gi, "")
+        .replace(/<html[^>]*>/gi, "")
+        .replace(/<head[^>]*>/gi, "")
+        .trim()
+      expect(stripped, html).toBe("")
     }
   })
 
@@ -186,6 +205,13 @@ describe("injectCsp — the meta lands where the HTML parser will see it", () =>
   it("handles quoted > inside attributes of the head tag", () => {
     const out = injectCsp('<html><head data-x="a>b"><title>t</title></head></html>', undefined)
     expect(out).toContain(`<head data-x="a>b">${META}<title>`)
+  })
+
+  it("keeps a leading doctype in front (no quirks mode) and a leading comment", () => {
+    expect(injectCsp("<!doctype html><p>x</p>", undefined)).toBe(`<!doctype html><head>${META}</head><p>x</p>`)
+    expect(injectCsp("<!-- c --><!doctype html><html><head></head></html>", undefined)).toBe(
+      `<!-- c --><!doctype html><html><head>${META}</head></html>`,
+    )
   })
 })
 

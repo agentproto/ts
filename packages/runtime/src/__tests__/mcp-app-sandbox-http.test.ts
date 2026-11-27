@@ -138,6 +138,17 @@ describe("MCP App sandbox — registration route", () => {
     )
   })
 
+  it("accepts the largest CSP the parser allows (body envelope covers it)", async () => {
+    await withDaemon(async (port) => {
+      const domains = Array.from({ length: 100 }, (_, i) => `https://${"a".repeat(480)}${i}.example.com`)
+      const r = await register(port, {
+        html: HTML,
+        csp: { connectDomains: domains, resourceDomains: domains, frameDomains: domains, baseUriDomains: domains },
+      })
+      expect(r.status).toBe(200)
+    })
+  })
+
   it("accepts the bearer", async () => {
     await withDaemon(
       async (port) => {
@@ -156,7 +167,7 @@ describe("MCP App sandbox — registration route", () => {
         expect(tooBigHtml.status).toBe(400)
         expect(tooBigHtml.body).toContain("html_too_large")
         // Far past the cap: refused while streaming, before the JSON is parsed.
-        expect((await register(port, { html: "x".repeat(200_000) })).status).toBe(413)
+        expect((await register(port, { html: "x".repeat(2_000_000) })).status).toBe(413)
       },
       { mcpAppSandbox: { maxHtmlBytes: 1000 } },
     )
@@ -274,6 +285,36 @@ describe("MCP App sandbox — publicOrigin topology", () => {
   })
 })
 
+describe("MCP App sandbox — non-canonical public hosts never reach the daemon API", () => {
+  it("case, trailing dot and default port variants of the public host are all document-only (HTTP and WebSocket)", async () => {
+    await withDaemon(
+      async (port) => {
+        for (const host of ["sbx.example.com", "SBX.EXAMPLE.COM", "sbx.example.com.", "sbx.example.com:443", "sbx.example.com.:443"]) {
+          for (const path of ["/health", "/sessions", "/mcp"]) {
+            const r = await raw(port, "GET", path, { host })
+            expect(r.status, `${host} ${path}`).toBe(404)
+          }
+        }
+        const ws = await new Promise<string>((resolve, reject) => {
+          const sock = connect(port, "127.0.0.1", () => {
+            sock.write(
+              `GET /sessions/x/pty HTTP/1.1\r\nHost: sbx.example.com.\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n` +
+                `Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n`,
+            )
+          })
+          let data = ""
+          sock.on("data", (d) => (data += d.toString()))
+          sock.on("close", () => resolve(data))
+          sock.on("error", reject)
+          setTimeout(() => sock.destroy(), 1500)
+        })
+        expect(ws).toContain("403")
+      },
+      { mcpAppSandbox: { publicOrigin: "https://sbx.example.com" } },
+    )
+  })
+})
+
 describe("MCP App sandbox — a sandbox origin is never trusted (R1)", () => {
   const sandboxOrigin = (port: number) => `http://abc123.sandbox.localhost:${port}`
   const ROUTES: Array<[string, string]> = [
@@ -330,8 +371,9 @@ describe("MCP App sandbox — a sandbox origin is never trusted (R1)", () => {
         expect(r.status).toBe(403)
         const reg = JSON.parse((await register(port)).body) as { url: string; origin: string; token: string; mode: string }
         expect(reg.mode).toBe("port")
-        expect(reg.origin).toBe(`http://127.0.0.1:${sbxPort}`)
-        const doc = await raw(sbxPort, "GET", `/v/${reg.token}`, { host: `127.0.0.1:${sbxPort}` })
+        // The page is on 127.0.0.1, so the view gets another hostname (cookies ignore ports).
+        expect(reg.origin).toBe(`http://localhost:${sbxPort}`)
+        const doc = await raw(sbxPort, "GET", `/v/${reg.token}`, { host: `localhost:${sbxPort}` })
         expect(doc.status).toBe(200)
         expect(doc.body).toBe(HTML)
         const health = await raw(sbxPort, "GET", "/health", { host: `127.0.0.1:${sbxPort}` })

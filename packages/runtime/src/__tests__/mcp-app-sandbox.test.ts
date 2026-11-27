@@ -237,6 +237,73 @@ describe("createMcpAppSandbox — serving", () => {
     expect(directives.find((d) => d.startsWith("frame-src"))).toBe("frame-src blob: https://www.youtube.com")
   })
 
+  it("drops private/local-network hosts, userinfo tricks and the page's own hostname in any spelling (R3)", () => {
+    const sb = createMcpAppSandbox(undefined, { port: 18790 })
+    const v = reg(sb, {
+      html: HTML,
+      ancestor: "https://host.example.com",
+      csp: {
+        connectDomains: [
+          "http://10.0.0.5:18790",
+          "http://192.168.1.2:*",
+          "http://172.16.0.1",
+          "http://172.31.255.254:18790",
+          "http://169.254.1.1",
+          "http://100.64.0.1",
+          "http://[fd00::1]:18790",
+          "http://[fe80::1]",
+          "http://printer.local",
+          "http://nas.internal:8080",
+          "*.local",
+          "http://user@127.0.0.1:18790",
+          "https://host.example.com:*",
+          "https://host.example.com.",
+          "https://HOST.example.com:8443",
+          "https://api.example.com",
+          "http://172.32.0.1",
+          "http://8.8.8.8",
+        ],
+      },
+    })
+    const { res, out } = fakeRes()
+    sb.handle(fakeReq("GET", `/v/${v.token}`), res, { kind: "subdomain", label: v.token })
+    const connect = (out.headers["content-security-policy"] ?? "").split("; ").find((d) => d.startsWith("connect-src"))
+    expect(connect).toBe("connect-src 'self' https://api.example.com http://172.32.0.1 http://8.8.8.8")
+  })
+
+  it("classifies the public hostname canonically: case, trailing dot, default port (R2)", () => {
+    const sb = createMcpAppSandbox({ publicOrigin: "https://sbx.example.com" }, { port: 18790 })
+    for (const h of ["sbx.example.com", "SBX.Example.com", "sbx.example.com.", "sbx.example.com:443", "sbx.example.com.:443"]) {
+      expect(sb.classifyHost(h), h).toEqual({ kind: "public" })
+    }
+    expect(sb.classifyHost("sbx.example.com:8443")).toBeNull()
+    expect(sb.classifyHost("other.example.com")).toBeNull()
+    for (const o of ["https://sbx.example.com", "https://SBX.example.com.", "https://sbx.example.com:443"]) {
+      expect(sb.isSandboxOrigin(o), o).toBe(true)
+    }
+    expect(sb.isSandboxOrigin("https://app.example.com")).toBe(false)
+  })
+
+  it("classifies a trailing-dot sandbox host, and *.sandbox.localhost origins with a trailing dot", () => {
+    const sb = createMcpAppSandbox(undefined, { port: 18790 })
+    expect(sb.classifyHost("abc.sandbox.localhost.:18790")).toEqual({ kind: "subdomain", label: "abc" })
+    expect(sb.isSandboxOrigin("http://abc.sandbox.localhost.:18790")).toBe(true)
+  })
+
+  it("port mode uses a hostname different from the registering page's (cookie jar)", () => {
+    const sb = createMcpAppSandbox({ mode: "port", port: 18791 }, { port: 18790 })
+    expect(reg(sb, { html: HTML, requestHost: "127.0.0.1:18790" }).origin).toBe("http://localhost:18791")
+    expect(reg(sb, { html: HTML, requestHost: "localhost:18790" }).origin).toBe("http://127.0.0.1:18791")
+  })
+
+  it("the public origin also wipes cookies on load (dedicated hostname)", () => {
+    const sb = createMcpAppSandbox({ publicOrigin: "https://sbx.example.com" }, { port: 18790 })
+    const v = reg(sb, { html: HTML, requestHost: "app.example.com" })
+    const r = fakeRes()
+    sb.handle(fakeReq("GET", `/v/${v.token}`), r.res, { kind: "public" })
+    expect(r.out.headers["clear-site-data"]).toBe('"cache", "cookies", "storage"')
+  })
+
   it("a page reached through a non-loopback host gets no *.localhost URL unless a public origin exists", () => {
     const sb = createMcpAppSandbox(undefined, { port: 18790 })
     expect(sb.register({ html: HTML, requestHost: "app.example.com" })).toBeNull()

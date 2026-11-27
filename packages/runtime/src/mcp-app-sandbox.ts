@@ -103,6 +103,15 @@ function splitHost(hostHeader: string | undefined): { name: string; port: string
   return { name: m[1] ?? "", port: m[2] ?? "" }
 }
 
+/** Lowercase, no trailing dot (`a.example.com.` and `a.example.com` are the same host). */
+function canonName(name: string): string {
+  return name.toLowerCase().replace(/\.+$/, "")
+}
+
+function defaultPort(protocol: string): string {
+  return protocol === "https:" ? "443" : "80"
+}
+
 function originOf(value: string | undefined): URL | null {
   if (!value || value === "null") return null
   try {
@@ -110,6 +119,29 @@ function originOf(value: string | undefined): URL | null {
   } catch {
     return null
   }
+}
+
+/** Loopback, unspecified, private, link-local, CGNAT and ULA addresses (host
+ *  already canonicalised by the URL parser, IPv6 still bracketed). */
+function isLocalAddress(host: string): boolean {
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) {
+    const [a, b] = host.split(".").map(Number) as [number, number]
+    return (
+      a === 127 || a === 0 || a === 10 ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 100 && b >= 64 && b <= 127)
+    )
+  }
+  if (host.startsWith("[")) {
+    const v6 = host.slice(1, -1)
+    if (v6 === "::" || v6 === "::1") return true
+    if (/^::ffff:/.test(v6)) return true // IPv4-mapped (any mapped v4 is treated as local)
+    if (/^f[cd][0-9a-f]{2}:/.test(v6)) return true // fc00::/7 ULA
+    if (/^fe[89ab][0-9a-f]:/.test(v6)) return true // fe80::/10 link-local
+  }
+  return false
 }
 
 export interface McpAppSandbox {
@@ -156,7 +188,15 @@ export function createMcpAppSandbox(
     const o = originOf(opts?.publicOrigin)
     return o && (o.protocol === "https:" || o.protocol === "http:") ? o.origin : undefined
   })()
-  const publicHost = publicOrigin ? new URL(publicOrigin).host.toLowerCase() : undefined
+  const publicUrl = publicOrigin ? new URL(publicOrigin) : undefined
+  const publicName = publicUrl ? canonName(publicUrl.hostname) : undefined
+  const publicPort = publicUrl ? publicUrl.port || defaultPort(publicUrl.protocol) : undefined
+  /** `Host` header → is it the public sandbox hostname (case, trailing dot, default port). */
+  const isPublicHost = (hostHeader: string | undefined): boolean => {
+    const h = splitHost(hostHeader)
+    if (!h || !publicName || !publicPort) return false
+    return canonName(h.name) === publicName && (h.port === "" || h.port === publicPort)
+  }
   const views = new Map<string, StoredView>()
   let listener: Server | undefined
 
@@ -183,10 +223,12 @@ export function createMcpAppSandbox(
   function isSandboxOrigin(origin: string | undefined): boolean {
     const u = originOf(origin)
     if (!u) return false
-    const host = u.hostname.toLowerCase()
+    const host = canonName(u.hostname)
     if (host === "sandbox.localhost" || host.endsWith(SANDBOX_SUFFIX)) return true
-    if (publicOrigin && u.origin === publicOrigin) return true
-    if (sandboxPort !== undefined && Number(u.port || (u.protocol === "https:" ? 443 : 80)) === sandboxPort) {
+    if (publicName && publicPort && host === publicName && (u.port || defaultPort(u.protocol)) === publicPort) {
+      return true
+    }
+    if (sandboxPort !== undefined && Number(u.port || defaultPort(u.protocol)) === sandboxPort) {
       // Any name pointing at the sandbox port is the sandbox origin.
       return true
     }
@@ -195,38 +237,43 @@ export function createMcpAppSandbox(
 
   /**
    * CSP sources a sandbox view must not be granted (R1/R3). Dropped, not
-   * rewritten: every loopback / private-name host in ANY spelling (the URL
+   * rewritten: every loopback or local-network host in ANY spelling (the URL
    * parser canonicalises `127.1`, `2130706433`, `0x7f.1`, `[::ffff:7f00:1]`,
-   * trailing dots, …) on any port, `localhost` and `*.localhost`, `0.0.0.0`,
-   * the registering page's own origin, the broad forms that would cover a
-   * plain-http loopback server (`*`, bare `http:` / `ws:`), and `data:` /
-   * `about:` / `javascript:` (opaque-origin frames would send `Origin: null`,
-   * which no origin guard can attribute to a sandbox).
+   * trailing dots, …) on any port: loopback, `localhost` / `*.localhost`,
+   * `0.0.0.0`, RFC 1918 / link-local / CGNAT / ULA / `.local` / `.internal`
+   * (the daemon may be bound to a LAN address); the registering page's own
+   * hostname on any port; the broad forms that would cover a plain-http
+   * local server (`*`, bare `http:` / `ws:`); and `data:` / `about:` /
+   * `javascript:` (opaque-origin frames would send `Origin: null`, which no
+   * origin guard can attribute to a sandbox).
    */
   function targetsDaemon(source: string, ancestor: string | undefined): boolean {
     const raw = source.toLowerCase()
     if (raw === "*" || raw === "http:" || raw === "ws:" || raw === "data:" || raw === "about:" || raw === "javascript:") {
       return true
     }
-    const hostPart = raw.replace(/^[a-z][a-z0-9+.-]*:\/\//, "").replace(/[/?#].*$/, "")
-    // Wildcard hosts: `*.localhost`, `*.local`, anything wildcarding a loopback label.
-    if (hostPart.startsWith("*.") && /(^|\.)(localhost|local|internal|localdomain)(:\d+|:\*)?$/.test(hostPart)) return true
+    const hostPart = raw
+      .replace(/^[a-z][a-z0-9+.-]*:\/\//, "")
+      .replace(/[/?#].*$/, "")
+      .replace(/^[^@]*@/, "")
+    // Wildcard hosts: `*.localhost`, `*.local`, anything wildcarding a local suffix.
+    const wildcardBase = hostPart.replace(/:(\d+|\*)$/, "")
+    if (wildcardBase.startsWith("*.") && /(^|\.)(localhost|local|internal|localdomain|lan|home|corp)$/.test(canonName(wildcardBase))) {
+      return true
+    }
     let host = ""
     try {
-      // Use a scheme-qualified URL so the WHATWG parser canonicalises the host.
+      // A scheme-qualified URL so the WHATWG parser canonicalises the host.
       host = new URL(`http://${hostPart.replace(/:\*$/, "")}`).hostname
     } catch {
       return false
     }
-    host = host.replace(/\.$/, "")
-    if (host === "localhost" || host.endsWith(".localhost")) return true
-    if (host === "[::1]" || host === "[::]" || host === "0.0.0.0") return true
-    if (/^\[(?:0{0,4}:){2,}(?:ffff:)?(?:7f[0-9a-f]{2}|0|0{1,4}):[0-9a-f]{1,4}\]$/.test(host)) return true
-    if (/^\[::ffff:/.test(host)) return true
-    if (/^127\./.test(host) || /^0\./.test(host)) return true
+    host = canonName(host)
+    if (host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal")) return true
+    if (isLocalAddress(host)) return true
     if (ancestor) {
       const a = originOf(ancestor)
-      if (a && a.host.toLowerCase() === hostPart) return true
+      if (a && canonName(a.hostname) === host) return true
     }
     return false
   }
@@ -238,12 +285,15 @@ export function createMcpAppSandbox(
     // page on a loopback host keeps a local sandbox origin.
     const hostName = splitHost(requestHost)?.name
     const remote = hostName !== undefined && !LOOPBACK_NAMES.has(hostName)
-    if (publicOrigin && publicHost && remote) {
+    if (publicOrigin && remote) {
       return { token, url: `${publicOrigin}/v/${token}`, origin: publicOrigin, mode: "public" }
     }
     if (remote) return null
     if (mode === "port" && sandboxPort !== undefined) {
-      const origin = `http://127.0.0.1:${sandboxPort}`
+      // A hostname different from the page's: cookies ignore ports, so the same
+      // name would put the view in the daemon page's cookie jar.
+      const name = hostName === "127.0.0.1" ? "localhost" : "127.0.0.1"
+      const origin = `http://${name}:${sandboxPort}`
       return { token, url: `${origin}/v/${token}`, origin, mode: "port" }
     }
     const origin = `http://${token}${SANDBOX_SUFFIX}:${daemon.port}`
@@ -298,7 +348,9 @@ export function createMcpAppSandbox(
       "cache-control": "no-store",
       "x-content-type-options": "nosniff",
       "referrer-policy": "no-referrer",
-      ...(sharedOrigin ? { "clear-site-data": '"cache", "storage"' } : {}),
+      ...(sharedOrigin
+        ? { "clear-site-data": kind.kind === "public" ? '"cache", "cookies", "storage"' : '"cache", "storage"' }
+        : {}),
     })
     res.end(method === "HEAD" ? undefined : view.html)
   }
@@ -313,11 +365,12 @@ export function createMcpAppSandbox(
       if (mode === "off") return null
       const h = splitHost(hostHeader)
       if (!h) return null
-      if (h.name === "sandbox.localhost" || h.name.endsWith(SANDBOX_SUFFIX)) {
-        const label = h.name === "sandbox.localhost" ? "" : h.name.slice(0, -SANDBOX_SUFFIX.length)
+      const name = canonName(h.name)
+      if (name === "sandbox.localhost" || name.endsWith(SANDBOX_SUFFIX)) {
+        const label = name === "sandbox.localhost" ? "" : name.slice(0, -SANDBOX_SUFFIX.length)
         return { kind: "subdomain", label }
       }
-      if (publicHost && hostHeader?.toLowerCase() === publicHost) return { kind: "public" }
+      if (isPublicHost(hostHeader)) return { kind: "public" }
       return null
     },
 
@@ -358,7 +411,7 @@ export function createMcpAppSandbox(
       if (mode !== "port" || sandboxPort === undefined || listener) return
       const srv = createServer((req, res) => {
         const h = splitHost(req.headers.host)
-        if (!h || !LOOPBACK_NAMES.has(h.name) || h.port !== String(sandboxPort)) {
+        if (!h || !LOOPBACK_NAMES.has(canonName(h.name)) || h.port !== String(sandboxPort)) {
           res.writeHead(403, { "content-type": "text/plain", "cache-control": "no-store" })
           res.end("forbidden host")
           return

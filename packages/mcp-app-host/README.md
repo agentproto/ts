@@ -53,8 +53,8 @@ instance) run in this mode.
 
 **Restricted** (fallback when no sandbox origin is available, or
 `sandbox: false`): an opaque-origin `srcdoc` iframe, `sandbox` without
-`allow-same-origin`, with a CSP `<meta>` injected as the first child of
-`<head>`. Safe, but such views cannot run. `mountMcpApp` logs
+`allow-same-origin`, with a CSP `<meta>` injected ahead of any author content (only the
+document prologue is read: doctype, comments, `<html>`, a leading `<head>`). Safe, but such views cannot run. `mountMcpApp` logs
 "view in restricted mode" and reports `mode: "restricted"`.
 
 In both modes the `allow` attribute comes from `permissions`, and the CSP
@@ -77,3 +77,10 @@ list.
   daemon (one per view in `subdomain` mode), not by the view.
 - **`*.sandbox.localhost` must resolve to loopback** (Chrome and Firefox do).
   Elsewhere, configure `daemon.mcpAppSandbox.mode = "port"`.
+- **`port` and `publicOrigin` modes share one origin between views.** The
+  daemon wipes that origin's storage (and, for `publicOrigin`, cookies) on every
+  document load, but two views open at the same time still share it; only the
+  default `subdomain` mode isolates them.
+- **Sources that could reach local services are dropped from a view's CSP**:
+  loopback and private-network hosts (any spelling, any port), the host page's
+  own hostname, `*`, bare `http:`/`ws:`, and `data:`/`about:`/`javascript:`.

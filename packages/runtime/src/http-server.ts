@@ -3840,7 +3840,9 @@ export async function startHttpServer(
           }
           let raw: unknown
           try {
-            raw = await readBoundedJson(req, mcpSandbox.maxHtmlBytes + 64 * 1024)
+            // JSON-escaping can expand HTML up to 6x (\u00XX), plus the CSP arrays
+            // parseRegistration accepts (4 x 100 x 512 chars, escaped the same way).
+            raw = await readBoundedJson(req, mcpSandbox.maxHtmlBytes * 6 + 4 * 100 * 512 * 6 + 4096)
           } catch {
             res.writeHead(413, { "content-type": "application/json" })
             res.end(JSON.stringify({ error: "body_too_large" }))
