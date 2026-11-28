@@ -216,7 +216,7 @@ async function runList(args: readonly string[]): Promise<number> {
         slug: found.slug,
         version: found.packageVersion ?? found.version,
         protocol: found.protocol,
-          ...(found.deprecated ? { deprecated: found.deprecated } : {}),
+        ...(found.deprecated ? { deprecated: found.deprecated } : {}),
         enabled: true,
         installed: true,
       })
