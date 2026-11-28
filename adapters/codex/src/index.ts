@@ -261,10 +261,16 @@ export const codex: AgentCliHandle = defineHarness({
       type: "string",
       description:
         "Optional Codex model ID. Omit it to use the model selected by the current ChatGPT or API-key account; the ACP bridge validates explicit IDs against that account.",
-    },    // Both ride the wrapper's `CODEX_CONFIG` JSON (merged into codex's session
+    },
+    // Both ride the wrapper's `CODEX_CONFIG` JSON (merged into codex's session
     // config, like `developer_instructions`); the keys are codex's own
     // `service_tier` and `model_reasoning_effort` config keys. Absent option
-    // ⇒ nothing is set and the account/model defaults apply.
+    // ⇒ nothing is set and the account/model defaults apply. The wrapper
+    // passes the JSON through, so a wrong literal would silently no-op: the
+    // enums mirror codex-rs `ServiceTier` (fast | flex, protocol/config_types.rs)
+    // and `ReasoningEffort` (none | minimal | low | medium | high | xhigh | …,
+    // protocol/openai_models.rs), read 2026-11-28; `max`/`ultra`/`persistent`
+    // are left out because the pinned codex may not know them.
     {
       id: "service_tier",
       type: "enum",

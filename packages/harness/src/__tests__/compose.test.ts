@@ -617,4 +617,10 @@ describe("composeSpawn: options sharing one JSON env channel", () => {
     expect(JSON.parse(env.INLINE_CONFIG!)).toEqual({ first: "1" })
     expect(env.PLAIN).toBe("q-y")
   })
+
+  it("an option's JSON also deep-merges into a same-key JSON value of the manifest env, its keys winning", () => {
+    const h = handle({ env: { INLINE_CONFIG: '{"base":"b","first":"old"}' }, options: [opt("a", "first")] })
+    const { env } = composeSpawn(h, { options: { a: "1" } })
+    expect(JSON.parse(env.INLINE_CONFIG!)).toEqual({ base: "b", first: "1" })
+  })
 })

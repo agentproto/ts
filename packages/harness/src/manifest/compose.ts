@@ -121,7 +121,9 @@ export function composeSpawn(
   const prepend: string[] = []
   const append: string[] = []
   // Always-on manifest env goes in first so a selected mode/option can
-  // still override any key it also declares (mode/option intent wins).
+  // still override any key it also declares (mode/option intent wins). One
+  // exception for options: when both values are JSON objects they are
+  // deep-merged (an option's keys win), not replaced.
   const env: Record<string, string> = { ...(handle.env ?? {}) }
   const envUnset: string[] = []
 
