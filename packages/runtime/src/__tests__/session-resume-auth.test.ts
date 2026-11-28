@@ -38,6 +38,7 @@ import type {
   SessionDescriptor,
 } from "../sessions.js"
 import type { AdapterAuthDescriptor, DeclaredAdapterOption } from "../spawn-defaults.js"
+import { SubscriptionSourceError } from "../spawn-defaults.js"
 import type { AuthProfile } from "@agentproto/auth"
 
 let acpCounter = 0
@@ -184,6 +185,71 @@ describe("resolveResumeAuth — shared billing-auth re-resolution", () => {
     expect(res.authSpec).toMatchObject({
       mode: "subscription",
       credential: "sk-ant-oat01-basefallback",
+    })
+  })
+
+  describe("a codex profile with its own login home", () => {
+    const CODEX_EXTERNAL: AdapterAuthDescriptor = {
+      provider: "openai",
+      authSubscription: { external: true, conflictEnv: ["CODEX_API_KEY"] },
+    }
+    const echo = {
+      mode: "subscription" as const,
+      fingerprint: "subscription · local-login",
+      provider: "openai",
+      credentialSource: "cli-local-login" as const,
+      setEnv: "",
+    }
+    const failProfile = async () => {
+      throw new RestartOverrideError("source-backed")
+    }
+
+    it("a resumed session keeps the profile's login home (it would otherwise fall back to the default account)", async () => {
+      const res = await resolveResumeAuth(
+        descWith(echo),
+        { authDescriptor: CODEX_EXTERNAL },
+        {
+          adapterSlug: "codex",
+          accessProfileRef: "codex-solo",
+          resolveAccessProfile: failProfile,
+          resolveCodexLogin: async () => ({ handled: true, loginHome: "/fake/homes/solo" }),
+          loadDefaultsConfig: async () => undefined,
+        },
+      )
+      expect(res.authSpec).toMatchObject({ externalCredential: true, loginHome: "/fake/homes/solo" })
+    })
+
+    it("a profile with no codexHome resumes exactly as before (no loginHome)", async () => {
+      const res = await resolveResumeAuth(
+        descWith(echo),
+        { authDescriptor: CODEX_EXTERNAL },
+        {
+          adapterSlug: "codex",
+          accessProfileRef: "codex-local",
+          resolveAccessProfile: failProfile,
+          resolveCodexLogin: async () => ({ handled: false }),
+          loadDefaultsConfig: async () => undefined,
+        },
+      )
+      expect(res.authSpec).not.toHaveProperty("loginHome")
+    })
+
+    it("a vanished login fails loud as a RestartOverrideError", async () => {
+      await expect(
+        resolveResumeAuth(
+          descWith(echo),
+          { authDescriptor: CODEX_EXTERNAL },
+          {
+            adapterSlug: "codex",
+            accessProfileRef: "codex-solo",
+            resolveAccessProfile: failProfile,
+            resolveCodexLogin: async () => {
+              throw new SubscriptionSourceError("auth_source_unresolved", "no Codex login in /fake")
+            },
+            loadDefaultsConfig: async () => undefined,
+          },
+        ),
+      ).rejects.toBeInstanceOf(RestartOverrideError)
     })
   })
 

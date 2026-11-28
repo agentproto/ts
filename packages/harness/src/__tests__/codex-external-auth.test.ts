@@ -156,3 +156,41 @@ describe("codex external subscription — mechanical resolved-spec application",
     expect(spawnCalls[0]!.env.OPENAI_API_KEY).toBe("sk-openai-AMBIENT")
   })
 })
+
+describe("codex external subscription: per-profile login home", () => {
+  beforeEach(() => {
+    spawnCalls.length = 0
+  })
+  const withStateHome = (): AgentCliDefinition => ({
+    ...codexLike(),
+    stateHome: { env: "CODEX_HOME", defaultDir: ".codex", share: ["auth.json"] },
+  })
+
+  it("points the stateHome env var at the spec's loginHome, still injecting no credential", async () => {
+    const runtime = createAgentCliRuntime(defineHarness(withStateHome()))
+    await runtime.start({
+      cwd: "/scratch",
+      auth: { ...externalSpec(), loginHome: "/fake/profiles/codex-solo" },
+    })
+    expect(spawnCalls[0]!.env.CODEX_HOME).toBe("/fake/profiles/codex-solo")
+    expect(spawnCalls[0]!.env[""]).toBeUndefined()
+  })
+
+  it("leaves CODEX_HOME alone when the spec has no loginHome", async () => {
+    const prev = process.env.CODEX_HOME
+    delete process.env.CODEX_HOME
+    try {
+      const runtime = createAgentCliRuntime(defineHarness(withStateHome()))
+      await runtime.start({ cwd: "/scratch", auth: externalSpec() })
+      expect(spawnCalls[0]!.env.CODEX_HOME).toBeUndefined()
+    } finally {
+      if (prev !== undefined) process.env.CODEX_HOME = prev
+    }
+  })
+
+  it("ignores a loginHome on an adapter that declares no stateHome", async () => {
+    const runtime = createAgentCliRuntime(defineHarness(codexLike()))
+    await runtime.start({ cwd: "/scratch", auth: { ...externalSpec(), loginHome: "/fake/profiles/x" } })
+    expect(spawnCalls[0]!.env.CODEX_HOME).toBeUndefined()
+  })
+})

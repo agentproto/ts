@@ -49,6 +49,7 @@ const authProfileSchema = z.object({
   credentialRef: z.string().optional(),
   source: z.string().optional(),
   subaccount: subaccountPinSchema.optional(),
+  codexHome: z.string().optional(),
   // Additional billing routes this one credential also serves (beyond
   // `vendor`/endpoint). Validated syntactically only — the auth package is
   // deliberately decoupled from the route vocabulary, so an unknown route

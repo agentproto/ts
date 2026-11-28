@@ -116,6 +116,16 @@ export interface AuthProfile {
    *  ABSENT ⇒ the account's default scope, byte-identical to a profile that
    *  predates this field. */
   subaccount?: SubaccountPin
+  /** Codex login home (`source: "codex"` only; absolute, `~/` accepted): the
+   *  directory holding THIS profile's `auth.json`. It becomes the spawn's
+   *  `CODEX_HOME`, and the reauth, credential discovery, login check, box-login
+   *  bridge and quota reader read the login from it. A ChatGPT login is bound to
+   *  one workspace, so one profile per workspace means one home per workspace;
+   *  pin the workspace with `subaccount: { kind: "workspace", id }` (the id is
+   *  the login's `tokens.account_id`). ABSENT ⇒ codex's default home
+   *  (`$CODEX_HOME` or `~/.codex`), byte-identical to a profile that predates
+   *  this field. See `codex-login.ts`. */
+  codexHome?: string
   /** Optional human-readable name ("Jeremy Max", "work OpenRouter"). */
   label?: string
   /** Whole-profile enable/disable. ABSENT (or `false`) ⇒ enabled (today's

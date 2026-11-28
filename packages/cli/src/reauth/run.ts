@@ -77,6 +77,7 @@ function defaultRunLogin(
   return new Promise(resolve => {
     const child = spawn(plan.command, plan.args, {
       stdio: ["inherit", opts.json ? 2 : "inherit", "inherit"],
+      ...(plan.env ? { env: { ...process.env, ...plan.env } } : {}),
     })
     child.on("error", e => {
       err(
@@ -175,7 +176,13 @@ export async function runAuthReauth(args: readonly string[]): Promise<number> {
   const { adapter } = resolved
   const target = { source: adapter.source, ...(resolved.profile ? { profile: resolved.profile } : {}) }
   const siblings = (await listAuthProfiles())
-    .filter(p => p.source === adapter.source && p.id !== resolved.profile?.id)
+    // Profiles share a login only when they share its location (`codexHome`).
+    .filter(
+      p =>
+        p.source === adapter.source &&
+        p.id !== resolved.profile?.id &&
+        p.codexHome === resolved.profile?.codexHome,
+    )
     .map(p => p.id)
   const affected = [...(resolved.profile ? [resolved.profile.id] : []), ...siblings]
 
@@ -184,7 +191,15 @@ export async function runAuthReauth(args: readonly string[]): Promise<number> {
   const beforePublic = publicParent(before, now())
   const planPublic =
     plan.kind === "command"
-      ? { kind: "command" as const, command: [plan.command, ...plan.args].join(" "), description: plan.description }
+      ? {
+          kind: "command" as const,
+          command: [
+            ...Object.entries(plan.env ?? {}).map(([k, v]) => `${k}=${v}`),
+            plan.command,
+            ...plan.args,
+          ].join(" "),
+          description: plan.description,
+        }
       : { kind: "manual" as const, instructions: plan.instructions }
 
   if (values.check) {

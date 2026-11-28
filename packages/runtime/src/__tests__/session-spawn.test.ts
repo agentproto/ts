@@ -6293,6 +6293,76 @@ describe("spawnAgentSession — codex file-based (external) subscription login",
     })
   })
 
+  describe("a codex profile with its own login home", () => {
+    let homeDir: string
+    beforeEach(() => {
+      homeDir = mkdtempSync(join(tmpdir(), "codex-profile-home-"))
+    })
+    afterEach(() => rmSync(homeDir, { recursive: true, force: true }))
+    const writeLogin = (accountId: string) =>
+      writeFileSync(
+        join(homeDir, "auth.json"),
+        JSON.stringify({ tokens: { access_token: "FAKE", refresh_token: "FAKE", id_token: "x.y.z", account_id: accountId } }),
+      )
+    const solo = (extra: Partial<import("@agentproto/auth").AuthProfile> = {}) => {
+      authProfileState.profiles["codex-solo"] = {
+        id: "codex-solo",
+        endpoint: "openai",
+        method: "oauth-bearer",
+        source: "codex",
+        codexHome: homeDir,
+        ...extra,
+      }
+    }
+
+    it("verifies THAT home (not the default login) and hands it to the driver as loginHome", async () => {
+      const verify = vi.fn(async () => {})
+      oauthState.verifyImpl = verify
+      writeLogin("acct-solo")
+      solo({ subaccount: { kind: "workspace", id: "acct-solo", name: "Solo Space" } })
+      const startSession = vi.fn(async () => fakeAgentSession())
+      const deps = baseDeps({
+        resolveAgentAdapter: async () => ({
+          startSession,
+          commandPreview: "mock-adapter",
+          authDescriptor: CODEX_EXTERNAL_DESCRIPTOR,
+        }),
+      }).deps
+      const result = await spawnAgentSession(deps, { adapter: "codex", cwd: "/tmp", access: { profileRef: "codex-solo" } })
+      expect(result.ok).toBe(true)
+      if (!result.ok) throw new Error("expected spawn")
+      expect(verify).not.toHaveBeenCalled()
+      const spec = (startSession.mock.calls[0] as unknown as [{ auth?: { loginHome?: string; externalCredential?: boolean } }])[0].auth
+      expect(spec?.externalCredential).toBe(true)
+      expect(spec?.loginHome).toBe(homeDir)
+      expect(result.descriptor.accessProfile).toMatchObject({
+        profileRef: "codex-solo",
+        subaccount: { kind: "workspace", id: "acct-solo" },
+      })
+    })
+
+    it("a login bound to ANOTHER workspace is refused before any session starts", async () => {
+      writeLogin("acct-team")
+      solo({ subaccount: { kind: "workspace", id: "acct-solo" } })
+      const { registry, deps } = authDeps()
+      const result = await spawnAgentSession(deps, { adapter: "codex", cwd: "/tmp", access: { profileRef: "codex-solo" } })
+      expect(result.ok).toBe(false)
+      if (result.ok) throw new Error("expected refusal")
+      expect(result.code).toBe("auth_source_unresolved")
+      expect(result.message).toContain("acct-solo")
+      expect(registry.list()).toHaveLength(0)
+    })
+
+    it("an empty home is refused with the login command for that home", async () => {
+      solo()
+      const { deps } = authDeps()
+      const result = await spawnAgentSession(deps, { adapter: "codex", cwd: "/tmp", access: { profileRef: "codex-solo" } })
+      expect(result.ok).toBe(false)
+      if (result.ok) throw new Error("expected refusal")
+      expect(result.message).toContain(homeDir)
+    })
+  })
+
   it("codex subscription profile + route.gateway openai (native match) spawns without base_url injection", async () => {
     const verify = vi.fn(async () => {})
     oauthState.verifyImpl = verify

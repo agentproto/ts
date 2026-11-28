@@ -825,6 +825,11 @@ export interface ResolvedAuthSpec {
    *  home for this spawn (a sub-account provider that needs the adapter's own
    *  login). Omitted ⇒ the adapter's declaration applies. */
   isolateDataHome?: boolean
+  /** Login home of an {@link externalCredential} subscription whose profile
+   *  carries its own (a Codex home): the driver points the adapter's
+   *  `stateHome` env var at it. A path, never a secret; set by the caller from
+   *  the profile, never forwarded to a box. */
+  loginHome?: string
   /** BOX-LOGIN BRIDGE marker forwarded from the box's `agent_start.auth`:
    *  the host uploaded the login file this external subscription reads, so
    *  the driver's missing-credential fail-fast is satisfied by that FILE
@@ -918,6 +923,9 @@ export interface ResolveAuthSpecInput {
   extraEnv?: Record<string, string>
   /** Passed through to {@link ResolvedAuthSpec.isolateDataHome}. */
   isolateDataHome?: boolean
+  /** Passed through to {@link ResolvedAuthSpec.loginHome} (external
+   *  subscriptions only). */
+  loginHome?: string
   /** Passed through to {@link ResolvedAuthSpec.loginFile} — the box-login
    *  bridge marker the box's own `agent_start.auth` carried (per-spawn only;
    *  never derived here). */
@@ -1240,6 +1248,7 @@ export function resolveAuthSpec(
     // The bridge marker rides ONLY with a credential-less external login —
     // an injected bearer (or an api-key) needs no file to point at.
     ...(input.loginFile === true && externalCredential ? { loginFile: true } : {}),
+    ...(input.loginHome !== undefined && externalCredential ? { loginHome: input.loginHome } : {}),
     ...(neitherConfigured ? { neitherConfigured } : {}),
     ...(baseUrl !== undefined ? { baseUrl } : {}),
     ...(input.extraEnv && credential !== undefined ? { extraEnv: input.extraEnv } : {}),

@@ -523,6 +523,18 @@ describe("resolveAuthSpec — external provider-scoped authSubscription (opencod
     authSubscription: { external: true, provider: "anthropic" as const },
   }
 
+  it("an external subscription carries the profile's loginHome onto the spec; a bearer or api-key spec never does", () => {
+    const base = {
+      descriptor: OPENCODE_DESCRIPTOR,
+      model: "anthropic/claude-sonnet-4-5",
+      explicit: true,
+      requestedMode: "subscription" as const,
+      externalSubscriptionVerified: true,
+    }
+    expect(resolveAuthSpec({ ...base, loginHome: "/fake/home" })?.spec.loginHome).toBe("/fake/home")
+    expect(resolveAuthSpec(base)?.spec).not.toHaveProperty("loginHome")
+  })
+
   it("subscription on an anthropic model resolves external: inject nothing, scrub the api-key var", () => {
     const r = resolveAuthSpec({
       descriptor: OPENCODE_DESCRIPTOR,

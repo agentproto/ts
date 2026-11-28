@@ -177,3 +177,15 @@ export type {
 
 export const SPEC_NAME = "auth/v1"
 export const SPEC_VERSION = "v1"
+
+export {
+  checkCodexWorkspacePin,
+  codexAuthFilePath,
+  describeCodexLogin,
+  parseCodexLoginDocument,
+  readCodexLogin,
+  resolveCodexHome,
+  type CodexLoginDescription,
+  type CodexLoginInfo,
+  type CodexWorkspaceInfo,
+} from "./codex-login.js"

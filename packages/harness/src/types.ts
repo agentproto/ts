@@ -1735,6 +1735,13 @@ export interface ResolvedAuthSpec {
    *  a missing `credential` (there deliberately is none). Money-safe: no bearer
    *  ever reaches an env var. Absent/false ⇒ today's inject-a-credential path. */
   externalCredential?: boolean
+  /** The directory holding the login an {@link externalCredential}
+   *  subscription reads, when it is not the CLI's default home (a profile with
+   *  its own Codex home). The driver points the adapter's `stateHome.env` at it,
+   *  so an unconfined spawn runs in it and a confined spawn links its
+   *  `share`d login file from it. Ignored when the adapter declares no
+   *  `stateHome`. Not a credential: a path. Never forwarded to a box. */
+  loginHome?: string
   /** BOX-LOGIN BRIDGE marker (see `AgentCliAuthSubscription.boxLogin`): the
    *  host already uploaded a REDACTED copy of this login's file into the box
    *  before the spawn, so the missing-credential fail-fast is satisfied by

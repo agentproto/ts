@@ -170,8 +170,8 @@ Usage:
                           create <id> <endpoint> --method <oauth-bearer|api-key>
                                  [--label <text>] [--source <name>]
                                  [--credential-file <path>] [--credential-env <VAR>]
-                                 [--subaccount <kind>:<id>] [--route <route>]...
-                                 [--credential-ref <slot>] [--json]
+                                 [--subaccount <kind>:<id>] [--codex-home <dir>]
+                                 [--route <route>]... [--credential-ref <slot>] [--json]
                           list [--endpoint <e>] [--json]
                                (each row carries expiresAt + state + the
                                 parent account; a sub-account profile shows
@@ -780,8 +780,8 @@ Usage:
   agentproto auth profile create <id> <endpoint> --method <oauth-bearer|api-key>
                                  [--label <text>] [--source <name>]
                                  [--credential-file <path>] [--credential-env <VAR>]
-                                 [--subaccount <kind>:<id>] [--route <route>]...
-                                 [--credential-ref <slot>] [--json]
+                                 [--subaccount <kind>:<id>] [--codex-home <dir>]
+                                 [--route <route>]... [--credential-ref <slot>] [--json]
   agentproto auth profile list|ls [--endpoint <e>] [--json]
   agentproto auth profile rm|remove|delete <id>
   agentproto auth profile import <origin> <endpoint> [--id <id>] [--label <text>]
@@ -828,6 +828,11 @@ project…) of its account, so a spawn on it bills THAT sub-account's quota. The
 kinds an account supports come from its registered provider; discover them with
 \`agentproto auth subaccounts list\`. A pin is not a secret: the account's
 credential (or source) is unchanged and is never stored twice.
+
+--codex-home <dir> (with --source codex) gives the profile its own Codex login
+home: the directory holding its auth.json, used as the spawn's CODEX_HOME. A
+ChatGPT login is bound to one workspace, so use one home per workspace
+(CODEX_HOME=<dir> codex login) and pin it with --subaccount workspace:<account id>.
 
 set-models "all" services every eligible model and clears any allowlist;
 "allow" narrows the profile to exactly the listed model ids (space- or
@@ -1031,7 +1036,7 @@ async function readCreateCredential(
 const CREATE_USAGE_LINE =
   `agentproto auth profile create: usage: create <id> <endpoint> ` +
   `--method <oauth-bearer|api-key> [--label <text>] [--source <name>] ` +
-  `[--subaccount <kind>:<id>] [--route <route>]... [--credential-file <path>] [--credential-env <VAR>] [--credential-ref <slot>] [--json]\n`
+  `[--subaccount <kind>:<id>] [--codex-home <dir>] [--route <route>]... [--credential-file <path>] [--credential-env <VAR>] [--credential-ref <slot>] [--json]\n`
 
 async function runProfileCreate(args: readonly string[]): Promise<number> {
   const { values, positionals } = parseArgs({
@@ -1043,6 +1048,7 @@ async function runProfileCreate(args: readonly string[]): Promise<number> {
       label: { type: "string" },
       source: { type: "string" },
       subaccount: { type: "string" },
+      "codex-home": { type: "string" },
       route: { type: "string", multiple: true },
       "credential-file": { type: "string" },
       "credential-env": { type: "string" },
@@ -1103,6 +1109,7 @@ async function runProfileCreate(args: readonly string[]): Promise<number> {
         ...(credential !== undefined ? { credential } : {}),
         ...(source !== undefined ? { source } : {}),
         ...(subaccount !== undefined ? { subaccount } : {}),
+        ...(values["codex-home"] !== undefined ? { codexHome: values["codex-home"] } : {}),
         ...(values.label ? { label: values.label } : {}),
         ...(values.route && values.route.length ? { routes: values.route } : {}),
         ...(values["credential-ref"]
@@ -1118,6 +1125,7 @@ async function runProfileCreate(args: readonly string[]): Promise<number> {
     process.stdout.write(
       `agentproto auth: ✓ created auth profile "${created.id}" (${created.endpoint}, ${created.method})\n` +
         (created.subaccount ? `  pinned to ${created.subaccount.kind} "${created.subaccount.name ?? created.subaccount.id}"\n` : "") +
+        (created.codexHome ? `  codex home ${created.codexHome} (log in there: CODEX_HOME=${created.codexHome} codex login)\n` : "") +
         (created.source
           ? `  source-backed — no stored secret; credential re-resolved from "${created.source}" at every spawn\n`
           : `  credential → OS keychain (${created.credentialRef})\n` +
@@ -1871,6 +1879,7 @@ async function runAuthStatus(args: readonly string[]): Promise<number> {
       endpoint: p.endpoint,
       source: p.source,
       ...(p.subaccount ? { subaccount: p.subaccount } : {}),
+      ...(p.codexHome ? { codexHome: p.codexHome } : {}),
       expiresAt: st.expiresAt,
       state: st.state,
       ...(st.parent ? { parent: st.parent } : {}),

@@ -258,3 +258,19 @@ describe("sub-account pins", () => {
     }
   })
 })
+
+describe("codexHome on disk", () => {
+  it("round-trips codexHome and a workspace pin", async () => {
+    await addAuthProfile({
+      id: "codex-solo",
+      endpoint: "openai",
+      method: "oauth-bearer",
+      source: "codex",
+      codexHome: "~/.codex-solo",
+      subaccount: { kind: "workspace", id: "acct-solo", name: "Solo Space" },
+    })
+    const got = await getAuthProfile("codex-solo")
+    expect(got?.codexHome).toBe("~/.codex-solo")
+    expect(got?.subaccount?.kind).toBe("workspace")
+  })
+})

@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises"
+import { codexAuthFilePath, resolveCodexHome, type ReauthTarget } from "@agentproto/auth"
 import { readRecipeLoginJson } from "@agentproto/secrets/provision/recipe"
 import {
   asRecord,
@@ -19,26 +21,48 @@ export function parseCodexLogin(raw: unknown): LoginDocument {
   }
 }
 
-/** Codex's login (`~/.codex/auth.json`, written by `codex login`). */
-export function createCodexReauthAdapter(read: () => Promise<unknown | undefined> = readLogin) {
+/** Codex's login (`<codex home>/auth.json`, written by `codex login`; the home
+ *  is `~/.codex` unless the profile carries its own `codexHome`). */
+export function createCodexReauthAdapter(read: (target?: ReauthTarget) => Promise<unknown | undefined> = readLogin) {
   return createLoginDocumentAdapter({
     source: "codex",
     aliases: ["openai"],
     displayName: "Codex",
     parse: parseCodexLogin,
     read,
-    login: {
-      kind: "command",
-      command: "codex",
-      args: ["login"],
-      description: "codex login (opens a browser; sign in with the ChatGPT account to use)",
+    login: target => {
+      const home = target.profile?.codexHome
+      if (home === undefined) {
+        return {
+          kind: "command",
+          command: "codex",
+          args: ["login"],
+          description: "codex login (opens a browser; sign in with the ChatGPT account to use)",
+        }
+      }
+      const dir = resolveCodexHome(home)
+      return {
+        kind: "command",
+        command: "codex",
+        args: ["login"],
+        env: { CODEX_HOME: dir },
+        description: `codex login in ${dir} (opens a browser; sign in with the ChatGPT account, and workspace, of this profile)`,
+      }
     },
     selfRefreshing: true,
     identityNote: "the Codex login document carries no account id",
   })
 }
 
-async function readLogin(): Promise<unknown | undefined> {
+async function readLogin(target?: ReauthTarget): Promise<unknown | undefined> {
+  const home = target?.profile?.codexHome
+  if (home !== undefined) {
+    try {
+      return await readFile(codexAuthFilePath(resolveCodexHome(home)), "utf8")
+    } catch {
+      return undefined
+    }
+  }
   try {
     return await readRecipeLoginJson("codex", "oauth-subscription")
   } catch {

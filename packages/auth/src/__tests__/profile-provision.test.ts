@@ -849,3 +849,59 @@ describe("createAuthProfile — origin provenance (WS6)", () => {
     expect(profiles.get("openrouter-api")).not.toHaveProperty("origin")
   })
 })
+
+describe("codex profiles: codexHome + workspace pin", () => {
+  const base = { id: "codex-solo", endpoint: "openai", method: "oauth-bearer" as const, source: "codex" }
+
+  it("stores codexHome and a workspace pin on a source-backed profile", async () => {
+    const { deps, profiles } = makeDeps()
+    const created = await createAuthProfile(
+      {
+        ...base,
+        codexHome: " ~/.codex-solo ",
+        subaccount: { kind: "workspace", id: "acct-solo", name: "Solo Space" },
+      },
+      deps,
+    )
+    expect(created.codexHome).toBe("~/.codex-solo")
+    expect(created.subaccount).toEqual({ kind: "workspace", id: "acct-solo", name: "Solo Space" })
+    expect(profiles.get("codex-solo")?.codexHome).toBe("~/.codex-solo")
+  })
+
+  it("omits codexHome when none is given (byte-identical to today)", async () => {
+    const { deps, profiles } = makeDeps()
+    await createAuthProfile(base, deps)
+    expect(profiles.get("codex-solo")).not.toHaveProperty("codexHome")
+  })
+
+  it("rejects codexHome on a profile that is not source codex", () => {
+    expect(() =>
+      validateCreateInput({ id: "x", endpoint: "anthropic", method: "oauth-bearer", credential: "t", codexHome: "~/.c" }),
+    ).toThrow(AuthProfileValidationError)
+  })
+
+  it("rejects a relative or blank codexHome", () => {
+    expect(() => validateCreateInput({ ...base, codexHome: "rel/dir" })).toThrow(/absolute/)
+    expect(() => validateCreateInput({ ...base, codexHome: "   " })).toThrow(/codexHome/)
+  })
+
+  it("rejects a non-workspace pin on a codex profile", () => {
+    expect(() => validateCreateInput({ ...base, subaccount: { kind: "org", id: "o" } })).toThrow(/workspace/)
+  })
+
+  it("updateAuthProfile sets and clears codexHome (tri-state)", async () => {
+    const { deps, profiles } = makeDeps()
+    await createAuthProfile(base, deps)
+    await updateAuthProfile("codex-solo", { codexHome: "~/.codex-solo" }, deps)
+    expect(profiles.get("codex-solo")?.codexHome).toBe("~/.codex-solo")
+    await updateAuthProfile("codex-solo", { label: "Solo" }, deps)
+    expect(profiles.get("codex-solo")?.codexHome).toBe("~/.codex-solo")
+    await updateAuthProfile("codex-solo", { codexHome: null }, deps)
+    expect(profiles.get("codex-solo")).not.toHaveProperty("codexHome")
+  })
+
+  it("updateAuthProfile refuses codexHome on a non-codex profile", async () => {
+    const { deps } = makeDeps([{ id: "a", endpoint: "anthropic", method: "oauth-bearer", source: "claude-code-oauth" }])
+    await expect(updateAuthProfile("a", { codexHome: "~/.c" }, deps)).rejects.toThrow(AuthProfileValidationError)
+  })
+})

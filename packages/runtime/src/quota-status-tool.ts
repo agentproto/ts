@@ -19,11 +19,19 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { z } from "zod"
-import { KeychainStore, getAuthProfile, type AuthProfile } from "@agentproto/auth"
+import {
+  KeychainStore,
+  getAuthProfile,
+  readCodexLogin,
+  resolveCodexHome,
+  type AuthProfile,
+  type CodexLoginInfo,
+} from "@agentproto/auth"
 import { createAccountHealthStore, reconcileHealthFromQuota, type AccountHealthStore } from "./account-health.js"
 import {
   QuotaReaderRegistry,
   createAnthropicOAuthQuotaReader,
+  createCodexQuotaReader,
   createMoonshotQuotaReader,
   createOpenRouterQuotaReader,
   type QuotaProfile,
@@ -37,15 +45,26 @@ import {
  *
  * Anthropic subscriptions (`oauth-bearer`) are read by a fetching reader that
  * probes once and parses the `anthropic-ratelimit-unified-*` headers. Codex
- * (`quotaFromCodexRateLimits`) is still a pure PARSER on this surface — a
- * caller feeds it a captured `rate_limits` payload directly — so there is
- * nothing to register for it here.
+ * subscriptions (source `codex`) are read from the ChatGPT usage endpoint with
+ * the login in the profile's Codex home (`readCodexLogin` is injectable; the
+ * default reads `<home>/auth.json`).
  */
-export function createQuotaReaderRegistry(): QuotaReaderRegistry {
+export function createQuotaReaderRegistry(
+  opts: { readCodexLogin?: (codexHome: string) => Promise<CodexLoginInfo | undefined> } = {},
+): QuotaReaderRegistry {
+  const readLogin = opts.readCodexLogin ?? readCodexLogin
   return new QuotaReaderRegistry()
     .register(createOpenRouterQuotaReader())
     .register(createMoonshotQuotaReader())
     .register(createAnthropicOAuthQuotaReader())
+    .register(
+      createCodexQuotaReader({
+        readLogin: async (p) => {
+          const info = await readLogin(resolveCodexHome(p.codexHome))
+          return info ? { accessToken: info.accessToken, ...(info.accountId ? { accountId: info.accountId } : {}) } : undefined
+        },
+      }),
+    )
 }
 
 /** One module-level default: the readers are stateless, construction is cheap. */
@@ -74,6 +93,8 @@ export interface QuotaStatusDeps {
    *  OS keychain. */
   resolveCredential?: (ref: string) => Promise<string | undefined>
   registry?: QuotaReaderRegistry
+  /** Read a Codex login from a home directory. Defaults to `<home>/auth.json`. */
+  readCodexLogin?: (codexHome: string) => Promise<CodexLoginInfo | undefined>
   fetchImpl?: typeof fetch
   now?: () => Date
   /** The calling session's own access-profile ref, when it has one. Used only
@@ -133,9 +154,14 @@ export async function readQuotaStatus(
     endpoint: profile.endpoint,
     method: profile.method,
     ...(profile.credentialRef !== undefined ? { credentialRef: profile.credentialRef } : {}),
+    ...(profile.source !== undefined ? { source: profile.source } : {}),
+    ...(profile.codexHome !== undefined ? { codexHome: profile.codexHome } : {}),
+    ...(profile.subaccount?.kind === "workspace" ? { workspaceId: profile.subaccount.id } : {}),
   }
 
-  const registry = deps.registry ?? sharedRegistry()
+  const registry =
+    deps.registry ??
+    (deps.readCodexLogin ? createQuotaReaderRegistry({ readCodexLogin: deps.readCodexLogin }) : sharedRegistry())
   if (!registry.find(quotaProfile)) {
     return {
       ok: false,

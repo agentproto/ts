@@ -622,3 +622,33 @@ describe("agentproto auth subaccounts / profile create --subaccount", () => {
     expect(err.join("")).toMatch(/opencode-orgs is deprecated/)
   })
 })
+
+describe("agentproto auth profile create --codex-home (one profile per ChatGPT workspace)", () => {
+  it("creates a source-backed codex profile with its own login home and a workspace pin", async () => {
+    const { out, restore } = capture()
+    const code = await runAuth([
+      "profile", "create", "codex-solo", "openai",
+      "--method", "oauth-bearer", "--source", "codex",
+      "--codex-home", "~/.codex-solo", "--subaccount", "workspace:acct-solo",
+    ])
+    restore()
+    expect(code).toBe(0)
+    expect(await getAuthProfile("codex-solo")).toMatchObject({
+      source: "codex",
+      codexHome: "~/.codex-solo",
+      subaccount: { kind: "workspace", id: "acct-solo" },
+    })
+    expect(out.join("")).toContain("~/.codex-solo")
+  })
+
+  it("rejects --codex-home on a profile that is not source codex, before any write", async () => {
+    const { err, restore } = capture()
+    const code = await runAuth([
+      "profile", "create", "x", "anthropic", "--method", "oauth-bearer", "--source", "claude-code-oauth", "--codex-home", "~/.c",
+    ])
+    restore()
+    expect(code).toBe(2)
+    expect(err.join("")).toMatch(/codexHome/)
+    expect(await listAuthProfiles()).toHaveLength(0)
+  })
+})

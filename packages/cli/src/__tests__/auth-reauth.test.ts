@@ -110,6 +110,34 @@ function installLoginThatRenews() {
 }
 
 describe("agentproto auth reauth", () => {
+  it("profiles with different login homes are not siblings: one re-login fixes only its own home", async () => {
+    await addAuthProfile({ id: "cx-a", endpoint: "openai", method: "oauth-bearer", source: "codex", codexHome: "/h/a" })
+    await addAuthProfile({ id: "cx-b", endpoint: "openai", method: "oauth-bearer", source: "codex", codexHome: "/h/b" })
+    await addAuthProfile({ id: "cx-a2", endpoint: "openai", method: "oauth-bearer", source: "codex", codexHome: "/h/a" })
+    registerReauthAdapter(fakeAdapter({ source: "codex", displayName: "Codex" }))
+    installLoginThatRenews()
+    const c = capture()
+    const code = await runAuth(["reauth", "cx-a"])
+    expect(code).toBe(0)
+    const text = c.text()
+    expect(text).toContain("Profiles under this parent: cx-a, cx-a2")
+    expect(text).not.toContain("cx-b")
+    unregisterReauthAdapter("codex")
+  })
+
+  it("re-logging the bare parent (default home) does not claim profiles that have their own home", async () => {
+    await addAuthProfile({ id: "cx-default", endpoint: "openai", method: "oauth-bearer", source: "codex" })
+    await addAuthProfile({ id: "cx-a", endpoint: "openai", method: "oauth-bearer", source: "codex", codexHome: "/h/a" })
+    registerReauthAdapter(fakeAdapter({ source: "codex", displayName: "Codex" }))
+    installLoginThatRenews()
+    const c = capture()
+    expect(await runAuth(["reauth", "codex"])).toBe(0)
+    const text = c.text()
+    expect(text).toContain("cx-default")
+    expect(text).not.toContain("cx-a")
+    unregisterReauthAdapter("codex")
+  })
+
   it("re-logs the PARENT of a sub-account profile in, verifies, and reports what it did", async () => {
     registerReauthAdapter(fakeAdapter())
     installLoginThatRenews()

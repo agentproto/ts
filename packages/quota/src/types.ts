@@ -49,6 +49,14 @@ export interface QuotaProfile {
   endpoint: string
   method: "oauth-bearer" | "api-key"
   credentialRef?: string
+  /** Self-refreshing credential source of a source-backed profile (`codex`,
+   *  …). Absent for a credential-backed profile. */
+  source?: string
+  /** Codex login home of a `source: "codex"` profile (absolute or `~/…`); a
+   *  reader resolves its login from it, defaulting to codex's own home. */
+  codexHome?: string
+  /** The workspace a profile pins (`subaccount.id` of a `workspace` pin). */
+  workspaceId?: string
 }
 
 /**
