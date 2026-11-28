@@ -1,5 +1,11 @@
 # @agentproto/sandbox-computer
 
+## 0.8.4
+
+### Patch Changes
+
+- @agentproto/sandbox@1.0.4
+
 ## 0.8.3
 
 ### Patch Changes

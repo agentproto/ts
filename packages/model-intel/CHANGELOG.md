@@ -1,5 +1,12 @@
 # @agentproto/model-intel
 
+## 0.4.3
+
+### Patch Changes
+
+- Updated dependencies [f4a1f64]
+  - @agentproto/quota@0.4.0
+
 ## 0.4.2
 
 ### Patch Changes

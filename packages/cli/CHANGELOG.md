@@ -1,5 +1,49 @@
 # @agentproto/cli
 
+## 1.39.0
+
+### Minor Changes
+
+- 4b635c3: `agentproto app serve` no longer lets anyone call an app's tools when it listens beyond loopback. With `--host` set to a non-loopback address, the page still loads without a credential, but tool calls and uploads need an access token: `Authorization: Bearer <token>`, or the cookie a first visit to `/?t=<token>` sets. The token comes from `--access-token-file`, `AGENTPROTO_APP_SERVE_TOKEN`, or a generated file in `~/.agentproto/app-serve/` (mode 0600, outside the app folder); `--insecure-no-auth` opts out.
+
+  `app serve` also stops serving dotfiles and dot-directories from the UI root (`.well-known` stays).
+
+  An app served from a sandbox box (`agent_start` with `appServe`) is protected the same way. The result carries `appServe.entryUrl`, the public URL with the token, and the spawn fails and stops the server if the box's `agentproto` is too old to enforce it. Before this change, the public URL of a served app let anyone run the app's allowed tools inside the box without any token.
+
+- f4a1f64: Use two ChatGPT/Codex subscriptions (one per workspace), the same way two Claude profiles work. A Codex profile (`source: "codex"`) can now carry `codexHome`, the directory holding its own `auth.json`, and a `workspace` pin (`subaccount: { kind: "workspace", id }`, the login's account id). A ChatGPT login is bound to one workspace, so use one home per workspace: `CODEX_HOME=<dir> codex login`, then `agentproto auth profile create codex-solo openai --method oauth-bearer --source codex --codex-home <dir> --subaccount workspace:<account id>`.
+
+  - Spawn: the home becomes the session's `CODEX_HOME` (also for a confined session and after a resume); the login in it, and its workspace against the pin, are checked before the spawn, fail-loud. A profile without these fields behaves exactly as before.
+  - `auth reauth`, `auth discover` / `auth profile import`, the box-login bridge and `auth_profile_create` / `auth_profile_update` / `auth_profile_list` (which lists the workspace titles of the login, never a token) all follow the profile's home.
+  - `quota_status` now reads Codex subscriptions: the 5 h and 7 d windows from the ChatGPT usage endpoint (`probe` basis, undocumented response, parsed defensively).
+
+- 9cfd7d7: A phone app can now be connected to your agent apps with a one-time link, without holding the key to the whole daemon. The new `device_offer` tool sends a link (Telegram message with a button, or returned on request) that works once for 10 minutes; the device that opens it shows a two-digit number, and you confirm on the machine's chat channel by comparing it. The device then receives its own revocable token, limited to the apps you granted (`"*"` or a list) and optionally the session read routes. Out-of-grant use answers `grant_out_of_scope`; a revoked device answers `access_revoked`, and a device idle for 90 days loses its access.
+
+  Such a device shows up in `agentproto devices list` (kind `app`, with its apps) and is renamed and revoked with `device_rename` / `device_revoke` and the `devices` commands; `device_pair_pending` lists requests waiting for confirmation. No tool can confirm a request, and without a confirmation channel nothing is granted. The daemon serves the link's landing page at `/pair` and the Android App Links proof from `~/.agentproto/assetlinks.json`.
+
+  An app can opt out of being opened from another device with `access: { remote: false }` in `APP.md`. Follows AIP-59 section 9 and AIP-53 `access`.
+
+- 40a373d: feat(mcp-apps): serve MCP App views from a dedicated sandbox origin, as the MCP Apps spec requires (host and view on different origins, `allow-same-origin`, CSP as an HTTP header). The daemon registers views at `POST /mcp-app-sandbox/views` and serves them on `<token>.sandbox.localhost` (or a dedicated port, or a fixed public hostname via `daemon.mcpAppSandbox`). A sandbox origin is never trusted by the daemon: any request carrying one in `Origin`/`Referer`, and any WebSocket upgrade from one, is refused with 403 whatever the allowlist says, and a sandbox host serves documents only. `mountMcpApp` uses the sandbox origin automatically when the daemon offers one and otherwise falls back to the opaque-origin `srcdoc` (logged as "restricted mode"); new `@agentproto/mcp-app-host/csp` export with `buildSandboxCspHeader`.
+
+### Patch Changes
+
+- 83ac390: `agentproto daemon stop|restart|uninstall` now refuse to act (exit 1, with a clear message) when the current HOME or port differs from the registered service's, so a daemon started under another HOME or port, such as an isolated test daemon, can no longer take down the per-user service by accident. Pass `--force-service` to target the service anyway.
+- Updated dependencies [f4a1f64]
+- Updated dependencies [9cfd7d7]
+- Updated dependencies [ad9125f]
+- Updated dependencies [325c582]
+  - @agentproto/auth@2.1.0
+  - @agentproto/harness@4.3.0
+  - @agentproto/app@2.8.0
+  - @agentproto/acp@0.16.1
+  - @agentproto/inference-endpoint@1.0.8
+  - @agentproto/secrets@2.2.3
+  - @agentproto/apps@0.28.3
+  - @agentproto/pairing-host@0.4.3
+  - @agentproto/sandbox-box@0.2.45
+  - @agentproto/sandbox-computer@0.8.4
+  - @agentproto/sandbox-e2b@0.11.7
+  - @agentproto/sandbox-instabox@0.2.12
+
 ## 1.38.0
 
 ### Minor Changes

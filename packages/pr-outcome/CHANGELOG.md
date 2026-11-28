@@ -1,5 +1,18 @@
 # @agentproto/pr-outcome
 
+## 0.1.15
+
+### Patch Changes
+
+- Updated dependencies [4b635c3]
+- Updated dependencies [f4a1f64]
+- Updated dependencies [9cfd7d7]
+- Updated dependencies [ad9125f]
+- Updated dependencies [40a373d]
+- Updated dependencies [2264d24]
+- Updated dependencies [aeb89b8]
+  - @agentproto/runtime@6.8.0
+
 ## 0.1.14
 
 ### Patch Changes

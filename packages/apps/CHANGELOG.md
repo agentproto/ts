@@ -1,5 +1,13 @@
 # @agentproto/apps
 
+## 0.28.3
+
+### Patch Changes
+
+- Updated dependencies [9cfd7d7]
+- Updated dependencies [ad9125f]
+  - @agentproto/app@2.8.0
+
 ## 0.28.2
 
 ### Patch Changes

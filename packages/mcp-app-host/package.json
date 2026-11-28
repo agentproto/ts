@@ -1,7 +1,7 @@
 {
   "name": "@agentproto/mcp-app-host",
-  "version": "0.1.6",
-  "description": "@agentproto/mcp-app-host \u2014 framework-free MCP Apps host. Wraps the official AppBridge from @modelcontextprotocol/ext-apps: a transport-agnostic core (createMcpAppHost) plus a browser DOM adapter (mountMcpApp) that mounts a ui:// resource in a sandboxed srcdoc iframe with its CSP.",
+  "version": "0.2.0",
+  "description": "@agentproto/mcp-app-host — framework-free MCP Apps host. Wraps the official AppBridge from @modelcontextprotocol/ext-apps: a transport-agnostic core (createMcpAppHost) plus a browser DOM adapter (mountMcpApp) that mounts a ui:// resource in a sandboxed srcdoc iframe with its CSP.",
   "keywords": [
     "agentproto",
     "mcp",
