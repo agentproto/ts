@@ -2897,6 +2897,10 @@ async function spawnWithPlacementLadder(
   }
 }
 
+function harnessDeprecationPrefix(harness: string): string {
+  return `harness "${harness}" is deprecated; `
+}
+
 async function spawnAgentSessionOnce(
   deps: SpawnAgentSessionDeps,
   input: SpawnAgentSessionInput,
@@ -4436,7 +4440,7 @@ async function spawnAgentSessionOnce(
   if (adapterCaps?.deprecated) {
     const { replacedBy, message } = adapterCaps.deprecated
     spawnWarnings.push(
-      `harness "${input.adapter}" is deprecated; use "${replacedBy}" instead.` +
+      harnessDeprecationPrefix(input.adapter) + `use "${replacedBy}" instead.` +
         (message ? ` ${message}` : ""),
     )
   }
@@ -8741,11 +8745,16 @@ export async function bootSandboxAgentSession(opts: {
       return cancelBoot()
     }
     boxSpawnEnforcedPostures = boxSpawnEnforcedPosturesOf(remoteDesc)
-    // The box resolves its own harness, so its spawn warnings carry the
-    // manifest deprecation for the harness that actually ran.
+    // The box resolves its own harness. Relay that harness's deprecation
+    // while keeping warnings about the host's internal request in the box.
     const remoteWarnings = (remoteDesc as { warnings?: unknown }).warnings
     if (Array.isArray(remoteWarnings)) {
-      bootWarnings.push(...remoteWarnings.filter((warning): warning is string => typeof warning === "string"))
+      const prefix = harnessDeprecationPrefix(opts.adapter)
+      for (const warning of remoteWarnings) {
+        if (typeof warning === "string" && warning.startsWith(prefix)) {
+          bootWarnings.push(warning)
+        }
+      }
     }
     // The box reports `resumeVia` only when its own adapter actually
     // rehydrated the requested conversation (`resumeSessionId` above) —
