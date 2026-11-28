@@ -10,6 +10,7 @@ import {
 } from "./env.js"
 import { execShell, type ExecResult } from "./exec.js"
 import { ProvisionCancelledError } from "./provision-scheduler.js"
+import { worktreesPnpmStoreEnv } from "./pnpm-store.js"
 
 /** One hook command's result, kept for error reporting / logging. */
 export interface HookRun {
@@ -190,6 +191,9 @@ export async function runSetup(
     // Resolved from the caller's env layered over process.env, and placed
     // BEFORE `opts.env` so an explicit caller value still wins.
     ...worktreesConcurrencyEnv({ ...process.env, ...(opts.env ?? {}) }),
+    // One pnpm store per pool, on the worktrees' own volume, imported with
+    // `clone-or-copy`: see pnpm-store.ts. Before `opts.env` so a caller wins.
+    ...worktreesPnpmStoreEnv(ctx.worktreePath, { ...process.env, ...(opts.env ?? {}) }),
     ...(opts.env ?? {}),
     TURBO_CACHE_DIR: resolveWorktreesTurboCacheDir(),
   }

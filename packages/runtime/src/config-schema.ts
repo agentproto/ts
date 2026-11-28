@@ -2141,7 +2141,7 @@ export const CONFIG_KEYS: readonly ConfigKeyEntry[] = [
     writable: true,
     section: "defaults",
     label: "Worktrees root",
-    help: "Absolute path new `worktree new` worktrees are created under.",
+    help: "Absolute path new `worktree new` worktrees are created under (default `~/.agentproto/worktrees`, i.e. the system disk). Set it to a directory on a larger volume if the home disk is small: `worktree new` warns when the root is on a nearly full system disk. Each repo pool under it also holds the shared pnpm store (`<root>/<repo>/.pnpm-store`).",
     default: "~/.agentproto/worktrees",
   },
   {

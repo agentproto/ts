@@ -41,10 +41,16 @@
  */
 
 import { spawn } from "node:child_process"
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { rename } from "node:fs/promises"
 import { basename, dirname, join } from "node:path"
 import { execArgv, execGit } from "./exec.js"
+import {
+	existingPnpmStoreDir,
+	findWorktreeVirtualStore,
+	pnpmStorePruneEnabled,
+	spawnPnpmStorePrune,
+} from "./pnpm-store.js"
 
 /** Directory (inside the worktrees root's repo bucket) background-delete leftovers land in. */
 export const WORKTREE_TRASH_DIRNAME = ".trash"
@@ -166,6 +172,56 @@ export interface RemoveWorktreeFastOptions {
 	 * returns the spawned pid. Ignored when `spawnRemoval` is set.
 	 */
 	spawnDeleter?: (trashParent: string) => number | undefined
+	/**
+	 * Test seam — replaces the detached `pnpm store prune` run on the pool's
+	 * shared pnpm store after the removal. Receives the store dir.
+	 */
+	pruneStore?: (storeDir: string) => void
+	/** Env consulted for the prune switch and the store location (default `process.env`). */
+	env?: NodeJS.ProcessEnv
+}
+
+/**
+ * After a worktree is gone: park its own out-of-tree pnpm virtual store in the
+ * trash (same background deleter, so the caller never waits), then prune the
+ * pool's shared pnpm store. Best effort, never throws: leftover bytes must not
+ * fail a removal that already happened.
+ */
+function releasePnpmStores(
+	path: string,
+	virtualStore: string | undefined,
+	stamp: number,
+	options: RemoveWorktreeFastOptions,
+): { trashed?: string } {
+	const env = options.env ?? process.env
+	let trashed: string | undefined
+	if (virtualStore) {
+		const trashDir = join(dirname(path), WORKTREE_TRASH_DIRNAME, `${basename(path)}-vstore-${stamp}`)
+		try {
+			mkdirSync(dirname(trashDir), { recursive: true })
+			renameSync(virtualStore, trashDir)
+			trashed = trashDir
+		} catch {
+			// Cross-volume (or otherwise unmovable): delete it in place, in the background.
+			try {
+				if (options.spawnRemoval) options.spawnRemoval(virtualStore)
+				else spawn("rm", ["-rf", virtualStore], { detached: true, stdio: "ignore" }).unref()
+			} catch {
+				// best effort
+			}
+		}
+	}
+	if (pnpmStorePruneEnabled(env)) {
+		const storeDir = existingPnpmStoreDir(path, env)
+		if (storeDir) {
+			try {
+				;(options.pruneStore ?? spawnPnpmStorePrune)(storeDir)
+			} catch {
+				// best effort
+			}
+		}
+	}
+	return trashed ? { trashed } : {}
 }
 
 /**
@@ -246,6 +302,10 @@ export async function removeWorktreeFast(
 		throw new Error(`git worktree remove failed (exit 128): '${path}' is locked; unlock it first`)
 	}
 
+	// The worktree's own pnpm virtual store may live outside the tree (a
+	// per-worktree `virtualStoreDir`): read where, before the tree moves.
+	const virtualStore = findWorktreeVirtualStore(path)
+
 	// Fast path: rename to a same-volume trash dir (instant, even for
 	// hundreds of thousands of files), prune the registration, hand the
 	// bytes to a detached background child.
@@ -265,14 +325,21 @@ export async function removeWorktreeFast(
 		// Fallback (cross-device link, permission, trash parent unmountable…):
 		// today's slow, plain removal — behavior identical to before.
 		await execGit(repoRoot, force ? ["worktree", "remove", "--force", path] : ["worktree", "remove", path])
+		const leftover = releasePnpmStores(path, virtualStore, stamp, options)
+		if (leftover.trashed) {
+			if (options.spawnRemoval) options.spawnRemoval(leftover.trashed)
+			else ensureTrashDeleter(dirname(leftover.trashed), options.spawnDeleter)
+		}
 		return
 	}
 	await execGit(repoRoot, ["worktree", "prune"])
+	const released = releasePnpmStores(path, virtualStore, stamp, options)
 
 	// Background deletion: detached so the parent (and its event loop) never
 	// waits for the unlinks; `.unref()` so the parent can exit first.
 	if (options.spawnRemoval) {
 		options.spawnRemoval(trashDir)
+		if (released.trashed) options.spawnRemoval(released.trashed)
 	} else {
 		ensureTrashDeleter(dirname(trashDir), options.spawnDeleter)
 	}

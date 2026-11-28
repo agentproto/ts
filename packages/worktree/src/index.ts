@@ -35,6 +35,15 @@ export {
 	WORKTREE_TRASH_DIRNAME,
 	type RemoveWorktreeFastOptions,
 } from "./fast-remove.js"
+export {
+	PNPM_STORE_DIRNAME,
+	WORKTREES_PNPM_STORE_DIR_ENV,
+	WORKTREES_PNPM_STORE_PRUNE_ENV,
+	findWorktreeVirtualStore,
+	resolveWorktreesPnpmStoreDir,
+	worktreesPnpmStoreEnv,
+} from "./pnpm-store.js"
+export { checkWorktreesRootVolume, type VolumeProbes } from "./volume-check.js"
 export { expandGlob, expandCloneGlob, globToRegExp, GlobTraversalError } from "./glob.js"
 export { cloneEntries } from "./clone.js"
 export {
