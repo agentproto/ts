@@ -7,7 +7,8 @@
 import { describe, it, expect, vi } from "vitest"
 import { createServer } from "node:http"
 import { AddressInfo } from "node:net"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync } from "node:fs"
+import { rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -24,10 +25,11 @@ import type { HeartbeatRunner } from "../heartbeat.js"
 /**
  * Remove the temp transcript dir. `registry.shutdown()` returns before its
  * async transcript writes finish, so a plain recursive rm can race a late
- * write and fail with ENOTEMPTY; retry until the writer has settled.
+ * write and fail with ENOTEMPTY. The async `rm` retries without blocking the
+ * event loop, so the pending writer can settle between attempts.
  */
-function removeTmp(dir: string): void {
-  rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
+async function removeTmp(dir: string): Promise<void> {
+  await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
 }
 
 function freePort(): Promise<number> {
@@ -107,7 +109,7 @@ async function route(anonymousSend: "block" | "label", urgency = "interrupt") {
   } finally {
     await http.stop()
     registry.shutdown()
-    removeTmp(tmp)
+    await removeTmp(tmp)
   }
 }
 
@@ -189,7 +191,7 @@ async function replyRoute(urgency = "interrupt") {
   } finally {
     await http.stop()
     registry.shutdown()
-    removeTmp(tmp)
+    await removeTmp(tmp)
   }
 }
 
