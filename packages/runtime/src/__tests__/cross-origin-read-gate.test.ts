@@ -14,6 +14,11 @@ import { createMcpServer } from "@agentproto/mcp-server"
 import { startHttpServer } from "../http-server.js"
 import { createRuntimeEvents } from "../events.js"
 import { createSessionsRegistry } from "../sessions.js"
+import { createApprovalsEngine } from "../approvals/engine.js"
+import { createSessionEventBus } from "../session-event-bus.js"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import type { ConversationStore } from "../conversations.js"
 import type { HeartbeatRunner } from "../heartbeat.js"
 
@@ -207,11 +212,31 @@ describe("cross-origin read gate", () => {
         expect((await get(port, "/host/load?token=tkn", { origin })).status).toBe(200)
         // HEAD passes the gate (the route itself may not implement HEAD).
         expect((await get(port, "/sessions?token=tkn", { origin }, "HEAD")).status).not.toBe(403)
-        // Not this gate's route: with no approvals engine wired it falls through (404), it is not a 403 from here.
-        expect((await get(port, "/approvals", { origin })).status).not.toBe(403)
       },
       { token: "tkn" },
     )
+  })
+
+  it("`/approvals*` is exempt here and answers by the approvals handler's own origin gate", async () => {
+    const home = mkdtempSync(join(tmpdir(), "read-gate-approvals-"))
+    const engine = createApprovalsEngine({ homeDir: home, sessionEvents: createSessionEventBus() })
+    try {
+      await withDaemon(
+        async ({ port }) => {
+          // The approvals route block (not the generic gate) refuses the foreign origin ...
+          const foreign = await get(port, "/approvals", { origin: "https://evil.example" })
+          expect(foreign.status).toBe(403)
+          expect(foreign.body).toContain("forbidden_origin")
+          // ... and serves native and allowlisted callers.
+          expect((await get(port, "/approvals")).status).toBe(200)
+          expect((await get(port, "/approvals", { origin: `http://127.0.0.1:${port}` })).status).toBe(200)
+        },
+        { approvals: engine },
+      )
+    } finally {
+      engine.dispose()
+      rmSync(home, { recursive: true, force: true })
+    }
   })
 
   it("does not change write routes' own 401 contract", async () => {
