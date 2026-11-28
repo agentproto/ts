@@ -316,7 +316,7 @@ quota or cap, and gets its new observation as usual. Among the new ones, a
 repeated id and several ids sharing one canonical URL form one candidate, so
 aliases cannot use several slots; it is decided on the member with the highest
 counter (ties: smaller URL, then smaller id), and a later alias of a decided
-candidate follows that decision without a line of its own.
+candidate's own URL follows that decision without a line of its own.
 
 Every distinct candidate gets exactly one line in `runs/<id>/sampling.jsonl`:
 `candidate`, `decision` (`kept` or `dropped`), `rule` when dropped, `band`,
