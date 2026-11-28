@@ -3797,6 +3797,16 @@ export function registerSessionTools(
         .describe(
           "Optional friendly name to display. Defaults to the source MCP's name."
         ),
+      allowTools: z
+        .array(z.string().min(1))
+        .optional()
+        .describe(
+          "Optional source-side tool allow-list (exact names or `*` patterns, " +
+            "e.g. `list_*`). Enforced by the daemon on every path to this " +
+            "import (`/mcp/imported/<id>`, `mcp_imported_tool_list`, " +
+            "`mcp_imported_call`): other tools are hidden and refused. A " +
+            "re-import without this field keeps the existing list."
+        ),
     },
     async input => {
       try {
@@ -3819,6 +3829,7 @@ export function registerSessionTools(
           {
             snapshot,
             ...(input.alias ? { alias: input.alias } : {}),
+            ...(input.allowTools ? { allowTools: input.allowTools } : {}),
           },
           getMcpCredentialDeps()
         )
