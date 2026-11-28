@@ -37,6 +37,7 @@ import {
   type FetchTransport,
   type HttpTransport,
   type SecretsPort,
+  MissingSecretError,
   TransportError,
   type TransportName,
   type TransportSet,
@@ -165,7 +166,16 @@ interface Failure {
   message: string
 }
 
-function classifyError(e: unknown): Failure {
+/**
+ * A verification page seen by the browser stops the connector (it is never
+ * bypassed). Seen by `http` or `api` it moves the task to the next transport,
+ * and fails the task with cause `challenge` when none remains.
+ */
+function challengeFailure(browser: boolean, message: string): Failure {
+  return { fallback: !browser, challenge: browser, cause: "challenge", message }
+}
+
+function classifyError(e: unknown, browser: boolean): Failure {
   if (e instanceof TransportError) {
     const message = e.message
     // A challenge always wins; otherwise a non-2xx status decides, whatever cause the error names.
@@ -176,7 +186,7 @@ function classifyError(e: unknown): Failure {
     }
     switch (e.cause) {
       case "challenge":
-        return { fallback: false, challenge: true, cause: "blocked", message }
+        return challengeFailure(browser, message)
       case "blocked":
         return { fallback: true, challenge: false, cause: "blocked", message }
       case "empty":
@@ -193,8 +203,8 @@ function classifyError(e: unknown): Failure {
 }
 
 /** Status first: 401/403/429 fall back, other non-2xx statuses are `http` and final, a bodyless 2xx is `empty`. */
-function classifyRaw(raw: FetchedRaw): Failure | undefined {
-  if (raw.challenge) return { fallback: false, challenge: true, cause: "blocked", message: "challenge page" }
+function classifyRaw(raw: FetchedRaw, browser: boolean): Failure | undefined {
+  if (raw.challenge) return challengeFailure(browser, "challenge page")
   const s = raw.httpStatus
   if (s !== undefined) {
     if (FALLBACK_STATUSES.has(s)) return { fallback: true, challenge: false, cause: "blocked", message: `HTTP ${s}` }
@@ -319,6 +329,11 @@ export function createCollector(options: CollectorOptions): Collector {
     await mine
   }
 
+  /** The request's own signal and the collector's, whichever fires first. */
+  function both(a?: AbortSignal, b?: AbortSignal): AbortSignal | undefined {
+    return a && b ? AbortSignal.any([a, b]) : (a ?? b)
+  }
+
   function handleFor(name: TransportName, connector: Connector, signal?: AbortSignal): FetchTransport {
     const delay = connector.pace.delayMs
     if (name === "browser") {
@@ -332,8 +347,9 @@ export function createCollector(options: CollectorOptions): Collector {
           },
           evaluate: (p, s) => b.evaluate(p, s),
           fetchInPage: async (p, r) => {
-            await gate(r.url, delay, r.signal ?? signal)
-            return b.fetchInPage(p, r)
+            const sig = both(r.signal, signal)
+            await gate(r.url, delay, sig)
+            return b.fetchInPage(p, { ...r, signal: sig })
           },
           scroll: (p, o) => b.scroll(p, o),
           waitFor: (p, o) => b.waitFor(p, o),
@@ -346,8 +362,9 @@ export function createCollector(options: CollectorOptions): Collector {
       name,
       http: {
         request: async (req) => {
-          await gate(req.url, delay, req.signal ?? signal)
-          return h.request({ signal, ...req })
+          const sig = both(req.signal, signal)
+          await gate(req.url, delay, sig)
+          return h.request({ ...req, signal: sig })
         },
       },
     }
@@ -365,7 +382,7 @@ export function createCollector(options: CollectorOptions): Collector {
     if (connector.access.level === "key") {
       const secret = await secrets.get(connector.access.secret)
       if (!secret) {
-        state.skipReason = `missing secret "${connector.access.secret}"`
+        state.skipReason = `missing_secret:${connector.access.secret}`
         state.transports = []
         return state
       }
@@ -814,14 +831,24 @@ export function createCollector(options: CollectorOptions): Collector {
         result = await connector.fetch(entry.task, handleFor(name, connector, sig), { secrets, signal: sig, now: iso() })
         failedRaws = result.raws
         // A challenge in any raw wins over the other failures.
-        const found = result.raws.map(classifyRaw).filter((f): f is Failure => f !== undefined)
+        const found = result.raws.map((r) => classifyRaw(r, name === "browser")).filter((f): f is Failure => f !== undefined)
         failure = found.find((f) => f.challenge) ?? found[0]
         if (!failure && result.raws.length === 0) {
           failure = { fallback: true, challenge: false, cause: "empty", message: "no content" }
         }
       } catch (e) {
         if (aborted()) return // stays pending
-        failure = classifyError(e)
+        if (e instanceof MissingSecretError) {
+          // This transport has no secret: try the next declared one, else skip with the secret's name.
+          const next = state.transports[entry.attempt + 1]
+          if (!next) return skip(entry, `missing_secret:${e.secret}`, "missing secret")
+          entry.escalations.push({ from: name, to: next })
+          await emit("escalation", { connector: connector.id, taskId: entry.task.id, from: name, to: next, cause: "missing_secret" })
+          entry.attempt++
+          enqueue(entry)
+          return
+        }
+        failure = classifyError(e, name === "browser")
         // Aborted because another task of this connector met a challenge: skipped, not failed.
         if (state.stopped && !failure.challenge) return skip(entry, "challenge", "challenge")
         thrown = true
@@ -847,7 +874,7 @@ export function createCollector(options: CollectorOptions): Collector {
               httpStatus: raw.httpStatus,
               transport: name,
               runId,
-              failure: thrown ? f.cause : (classifyRaw(raw)?.cause ?? f.cause),
+              failure: thrown ? f.cause : (classifyRaw(raw, name === "browser")?.cause ?? f.cause),
             })
           }
         })
@@ -996,9 +1023,12 @@ export function createCollector(options: CollectorOptions): Collector {
       }
 
       const challenged = mine.some((t) => t.reason === "challenge")
+      const missing = mine.find((t) => t.status === "skipped" && t.reason?.startsWith("missing_secret:"))
       let status: ConnectorReport["status"] = "ok"
       let reason: string | undefined
-      if (s.skipReason) status = "skipped"
+      let skippedReason = s.skipReason
+      if (!skippedReason && missing && done === 0 && failedTasks.length === 0 && skipped === mine.length) skippedReason = missing.reason
+      if (skippedReason) status = "skipped"
       else if (challenged) {
         status = done > 0 ? "partial" : "failed"
         reason = "challenge: the connector was stopped and its remaining tasks skipped"
@@ -1024,7 +1054,7 @@ export function createCollector(options: CollectorOptions): Collector {
       connectors.push({
         connector: s.id,
         status,
-        ...(s.skipReason ? { skippedReason: s.skipReason } : {}),
+        ...(skippedReason ? { skippedReason } : {}),
         ...(reason ? { reason } : {}),
         tasks: { planned: mine.length, done, failed: failedTasks.length, skipped },
         newItems: sum.newItems,
