@@ -486,6 +486,16 @@ describe("discoverCredentials — codex homes", () => {
     ).rejects.toBeInstanceOf(CredentialImportError)
   })
 
+  it("importing the DEFAULT home explicitly works (it is the default probe's entry)", async () => {
+    const { deps: provision } = makeProvisionDeps()
+    const created = await importDiscoveredCredential(
+      { origin: "codex", endpoint: "openai", id: "codex-default", codexHome: "~/.codex" },
+      provision,
+      { homeDir: HOME, env: {}, platform: "linux", readFile: fakeReadFile({ [`${HOME}/.codex/auth.json`]: login }) },
+    )
+    expect(created).toMatchObject({ id: "codex-default", codexHome: "~/.codex" })
+  })
+
   it("refuses codexHome for another origin", async () => {
     const { deps: provision } = makeProvisionDeps()
     await expect(

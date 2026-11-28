@@ -39,6 +39,7 @@
 import { execFileSync } from "node:child_process"
 import { readFileSync } from "node:fs"
 import { homedir } from "node:os"
+import { isAbsolute } from "node:path"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import {
   createAuthProfile,
@@ -324,7 +325,7 @@ function probeFileOauth(
  *  (as codex itself reads it), else `~/.codex/auth.json`. */
 function defaultCodexAuthFile(d: ResolvedDeps): string {
   const fromEnv = d.env.CODEX_HOME
-  return fromEnv && fromEnv.startsWith("/") ? `${fromEnv.replace(/\/$/, "")}/auth.json` : CODEX_DEFAULT_FILE
+  return fromEnv && isAbsolute(fromEnv) ? `${fromEnv.replace(/[\\/]$/, "")}/auth.json` : CODEX_DEFAULT_FILE
 }
 
 /** Absolute `<home>/auth.json` of a (possibly `~/`) codex home. */
@@ -566,11 +567,16 @@ export async function importDiscoveredCredential(
     ...(codexHome !== undefined ? { codexHomes: [...(ioDeps.codexHomes ?? []), codexHome] } : {}),
   })
   const wantedHome = codexHome !== undefined ? codexHomeAuthFile(resolveDeps(ioDeps), codexHome).slice(0, -"/auth.json".length) : undefined
+  // The default home is reported by the default probe, without a `codexHome`.
+  const wantsDefaultHome =
+    wantedHome !== undefined &&
+    expandHome(resolveDeps(ioDeps).homeDir, defaultCodexAuthFile(resolveDeps(ioDeps))) === `${wantedHome}/auth.json`
   const present = discovered.some(
     (c) =>
       c.origin === args.origin &&
       c.endpoint === plan.endpoint &&
-      (wantedHome === undefined || c.codexHome === wantedHome),
+      (wantedHome === undefined ||
+        (wantsDefaultHome ? c.codexHome === undefined : c.codexHome === wantedHome)),
   )
   if (!present) {
     throw new CredentialImportError(

@@ -181,7 +181,7 @@ export async function runAuthReauth(args: readonly string[]): Promise<number> {
       p =>
         p.source === adapter.source &&
         p.id !== resolved.profile?.id &&
-        (resolved.profile === undefined || p.codexHome === resolved.profile.codexHome),
+        p.codexHome === resolved.profile?.codexHome,
     )
     .map(p => p.id)
   const affected = [...(resolved.profile ? [resolved.profile.id] : []), ...siblings]
