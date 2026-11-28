@@ -21,6 +21,15 @@ import { createSessionMessage } from "../session-message.js"
 import type { ConversationStore } from "../conversations.js"
 import type { HeartbeatRunner } from "../heartbeat.js"
 
+/**
+ * Remove the temp transcript dir. `registry.shutdown()` returns before its
+ * async transcript writes finish, so a plain recursive rm can race a late
+ * write and fail with ENOTEMPTY; retry until the writer has settled.
+ */
+function removeTmp(dir: string): void {
+  rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
+}
+
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const srv = createServer()
@@ -98,7 +107,7 @@ async function route(anonymousSend: "block" | "label", urgency = "interrupt") {
   } finally {
     await http.stop()
     registry.shutdown()
-    rmSync(tmp, { recursive: true, force: true })
+    removeTmp(tmp)
   }
 }
 
@@ -180,7 +189,7 @@ async function replyRoute(urgency = "interrupt") {
   } finally {
     await http.stop()
     registry.shutdown()
-    rmSync(tmp, { recursive: true, force: true })
+    removeTmp(tmp)
   }
 }
 
