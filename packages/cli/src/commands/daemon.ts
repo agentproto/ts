@@ -53,7 +53,7 @@
 
 import { spawn } from "node:child_process"
 import { openSync, promises as fs } from "node:fs"
-import { homedir, platform as osPlatform } from "node:os"
+import { homedir, platform as osPlatform, userInfo } from "node:os"
 import { dirname, join, posix as pathPosix, win32 as pathWin32 } from "node:path"
 import { parseArgs } from "node:util"
 import {
@@ -83,6 +83,9 @@ Usage:
   agentproto daemon restart               kill + relaunch (replaces \`pnpm killport 18790\`)
   agentproto daemon stop                  stop the service
   agentproto daemon status                installed? running? /health reachable?
+                                          stop, restart and uninstall refuse to act when the current HOME or
+                                          port differs from the registered service's; pass --force-service
+                                          to target the service anyway
   agentproto daemon logs [--lines <N>]    tail daemon.log
 
 Configure defaults via \`agentproto config set\` before \`install\`:
@@ -104,7 +107,15 @@ export async function runDaemon(args: readonly string[]): Promise<number> {
     return 2
   }
   const sub = args[0]
-  const rest = args.slice(1)
+  const guarded = sub === "stop" || sub === "restart" || sub === "uninstall"
+  const rest = guarded ? args.slice(1).filter(a => a !== "--force-service") : args.slice(1)
+  if (guarded && !args.includes("--force-service")) {
+    const refusal = await checkServiceOwnership(sub)
+    if (refusal) {
+      process.stderr.write(refusal)
+      return 1
+    }
+  }
   const win = osPlatform() === "win32"
   const linux = osPlatform() === "linux"
   switch (sub) {
@@ -128,6 +139,110 @@ export async function runDaemon(args: readonly string[]): Promise<number> {
       )
       return 2
   }
+}
+
+export interface ServiceOwnershipInput {
+  /** HOME this process runs under (`$HOME`, which a test daemon overrides). */
+  currentHome: string
+  /** Home directory of the OS user — where the registered service lives. */
+  serviceHome: string
+  /**
+   * Port this invocation explicitly targets (`AGENTPROTO_DAEMON_URL` on
+   * loopback), or null when none. The `daemon.port` config key is NOT used:
+   * it can legitimately change after install, and stop/restart address the
+   * service by label, not by port.
+   */
+  currentPort: number | null
+  /** Port the registered service was installed with, or null when unknown. */
+  servicePort: number | null
+}
+
+/**
+ * `daemon stop|restart|uninstall` act on ONE per-user service, whatever
+ * `HOME` or port the calling process uses. From an isolated test daemon
+ * (its own HOME / port) that would take down the real service, so refuse
+ * unless the caller is the service's own HOME and port. Returns the refusal
+ * message, or null when the call may proceed. Pure: no I/O.
+ */
+export function evaluateServiceOwnership(
+  verb: string,
+  input: ServiceOwnershipInput,
+): string | null {
+  const homeDiffers = input.currentHome !== input.serviceHome
+  // An unknown side (no explicit target, or no readable service definition,
+  // e.g. the Windows task or the Linux pidfile fallback) is never a mismatch.
+  const portDiffers =
+    input.currentPort !== null &&
+    input.servicePort !== null &&
+    input.currentPort !== input.servicePort
+  if (!homeDiffers && !portDiffers) return null
+  const what = [
+    homeDiffers ? `HOME ${input.currentHome} (service: ${input.serviceHome})` : null,
+    portDiffers ? `port ${input.currentPort} (service: ${input.servicePort})` : null,
+  ]
+    .filter(Boolean)
+    .join(" and ")
+  return (
+    `agentproto daemon ${verb}: refusing — this is not the daemon of this ${
+      homeDiffers && portDiffers ? "HOME/port" : homeDiffers ? "HOME" : "port"
+    }: ${what}.\n` +
+    "The service is per-user, so this would stop the registered service, not a daemon you " +
+    "started under a different HOME or port. Stop that one by its pid or with " +
+    `\`pkill -f "serve --port ${portDiffers ? input.currentPort : "<port>"}"\`, or pass --force-service to target the service anyway.\n`
+  )
+}
+
+/** Port in a service definition's `serve … --port N` argv (plist, unit, task). */
+export function parseServicePort(definition: string): number | null {
+  const m = /--port(?:<\/string>\s*<string>|\s+|=)(\d+)/.exec(definition)
+  return m ? Number(m[1]) : null
+}
+
+async function checkServiceOwnership(verb: string): Promise<string | null> {
+  let serviceHome = homedir()
+  try {
+    serviceHome = userInfo().homedir || serviceHome
+  } catch {
+    /* no passwd entry (containers): fall back to the current home */
+  }
+  // An `AGENTPROTO_HOME` pointing away from the service's state directory is
+  // the documented isolation override, same as a different HOME.
+  const stateDir = process.env.AGENTPROTO_HOME
+  const currentHome =
+    stateDir && stateDir !== join(serviceHome, ".agentproto") ? stateDir : homedir()
+  const definition = osPlatform() === "darwin"
+    ? launchdPlistPath(serviceHome)
+    : osPlatform() === "linux"
+      ? systemdUnitPath(serviceHome)
+      : osPlatform() === "win32"
+        ? schtasksTaskScriptPath(serviceHome)
+        : null
+  let servicePort: number | null = null
+  if (definition) {
+    try {
+      servicePort = parseServicePort(await fs.readFile(definition, "utf8"))
+    } catch {
+      /* no readable definition (e.g. Linux pidfile fallback): port unknown */
+    }
+  }
+  let currentPort: number | null = null
+  const url = process.env.AGENTPROTO_DAEMON_URL
+  if (url) {
+    try {
+      const u = new URL(url)
+      if (["127.0.0.1", "localhost", "[::1]"].includes(u.hostname) && u.port) {
+        currentPort = Number(u.port)
+      }
+    } catch {
+      /* ignore a malformed URL; discovery reports it elsewhere */
+    }
+  }
+  return evaluateServiceOwnership(verb, {
+    currentHome,
+    serviceHome,
+    currentPort,
+    servicePort,
+  })
 }
 
 interface Paths {
