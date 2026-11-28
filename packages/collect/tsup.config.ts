@@ -7,10 +7,11 @@ export default createTsupConfig({
  */`,
   entry: {
     index: "src/index.ts",
+    node: "src/node/index.ts",
   },
   format: ["esm"],
   splitting: true,
   dts: true,
-  external: ["zod"],
+  external: ["zod", /^node:/],
   noExternal: [],
 })

@@ -1,3 +1,5 @@
 export * from "./schemas"
 export * from "./ids"
+export * from "./store"
+export { memoryStore } from "./memory-store"
 export { STORE_SCHEMA_VERSION } from "./version"
