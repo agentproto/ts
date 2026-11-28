@@ -179,9 +179,37 @@ export const Pickup = z
     measuredAt: timestamp,
     runId: z.string().optional(),
   })
-  .refine((p) => p.verified === VERIFIED_PICKUP_METHODS.includes(p.method), {
-    message: "verified must be true exactly for link, content_id and declared methods",
-    path: ["verified"],
+  .superRefine((p, ctx) => {
+    if (p.verified !== VERIFIED_PICKUP_METHODS.includes(p.method)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["verified"],
+        message: "verified must be true exactly for link, content_id and declared methods",
+      })
+      return
+    }
+    const e = p.evidence
+    const hasEvidence = e.outboundLink !== undefined || e.excerpt !== undefined || e.similarity !== undefined
+    if (p.method === "link" || p.method === "content_id") {
+      if (!hasEvidence) {
+        ctx.addIssue({ code: "custom", path: ["evidence"], message: `${p.method} pickup needs evidence` })
+      }
+      if (!e.rawRef) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["evidence", "rawRef"],
+          message: `${p.method} pickup needs evidence.rawRef`,
+        })
+      }
+    } else if (p.method === "declared") {
+      if (e.outboundLink === undefined && e.excerpt === undefined && !p.outlet) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["evidence"],
+          message: "declared pickup needs an excerpt, an outbound link or an outlet",
+        })
+      }
+    }
   })
 export type Pickup = z.infer<typeof Pickup>
 
@@ -196,7 +224,7 @@ export const Recipe = z.object({
           .array(
             z.object({
               text: z.string().min(1),
-              subject: z.string().optional(),
+              subject: z.string().min(1),
             }),
           )
           .default([]),
@@ -234,6 +262,29 @@ export type Recipe = z.infer<typeof Recipe>
 export const FailureCause = z.enum(["blocked", "empty", "network", "parse", "other"])
 export type FailureCause = z.infer<typeof FailureCause>
 
+/** Every `with*` field and `eligible` is a count of items; shares are computed by the reader. */
+export const CoverageCell = z.object({
+  platform: z.string(),
+  format: z.string(),
+  language: z.string(),
+  subject: z.string(),
+  items: z.number().int().nonnegative(),
+  /** At least one `followers` or `subscribers` reading. Karma is not counted here. */
+  withAuthorAudience: z.number().int().nonnegative(),
+  withPrimaryMetric: z.number().int().nonnegative(),
+  /** `postedAt` and `measuredAt` both present. */
+  withAge: z.number().int().nonnegative(),
+  withAuthorId: z.number().int().nonnegative(),
+  /** `contentId` shared with no other item. */
+  withUniqueContent: z.number().int().nonnegative(),
+  /** Audience, primary metric, age and author id all present. */
+  eligible: z.number().int().nonnegative(),
+})
+export type CoverageCell = z.infer<typeof CoverageCell>
+
+export const Coverage = z.object({ cells: z.array(CoverageCell) })
+export type Coverage = z.infer<typeof Coverage>
+
 export const ConnectorReport = z.object({
   connector: z.string().min(1),
   status: z.enum(["ok", "partial", "failed", "skipped"]).default("ok"),
@@ -258,31 +309,9 @@ export const ConnectorReport = z.object({
     )
     .default([]),
   durationMs: z.number().nonnegative(),
+  coverage: Coverage.optional(),
 })
 export type ConnectorReport = z.infer<typeof ConnectorReport>
-
-/** Every `with*` field and `eligible` is a count of items; shares are computed by the reader. */
-export const CoverageCell = z.object({
-  platform: z.string(),
-  format: z.string(),
-  language: z.string(),
-  subject: z.string(),
-  items: z.number().int().nonnegative(),
-  /** At least one `followers` or `subscribers` reading. Karma is not counted here. */
-  withAuthorAudience: z.number().int().nonnegative(),
-  withPrimaryMetric: z.number().int().nonnegative(),
-  /** `postedAt` and `measuredAt` both present. */
-  withAge: z.number().int().nonnegative(),
-  withAuthorId: z.number().int().nonnegative(),
-  /** `contentId` shared with no other item. */
-  withUniqueContent: z.number().int().nonnegative(),
-  /** Audience, primary metric, age and author id all present. */
-  eligible: z.number().int().nonnegative(),
-})
-export type CoverageCell = z.infer<typeof CoverageCell>
-
-export const Coverage = z.object({ cells: z.array(CoverageCell) })
-export type Coverage = z.infer<typeof Coverage>
 
 export const RunReport = z.object({
   runId: z.string().min(1),

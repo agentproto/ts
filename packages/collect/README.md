@@ -15,10 +15,13 @@ filesystem, no network, one runtime dependency (`zod`).
 - **`canonicalUrl(url)`**: lowercase host, no fragment, no credentials, no
   default port, tracking parameters removed (`utm_*`, `fbclid`, `gclid`,
   `mc_cid`, `mc_eid`, `ref_src`, `igshid`, `si`, ...), remaining
-  parameters sorted, no trailing slash.
+  parameters sorted, no trailing slash. It only normalises http(s); any other
+  input comes back trimmed and unchanged. The result is a dedup key: keep the
+  original URL too, and pass the final URL (redirects are not followed).
 - **`textFingerprint(text)`**: SHA-256 of the text after case, whitespace and
   punctuation normalisation. Hashing goes through Web Crypto
-  (`crypto.subtle`), so it is async and needs no Node built-in.
+  (`crypto.subtle`), so it is async and needs no Node built-in. Text that normalises to nothing
+  returns `undefined` (no content id).
 - **`STORE_SCHEMA_VERSION`**: version of the stored shapes.
 
 ## Rules baked into the schemas

@@ -27,7 +27,9 @@ describe("schemas", () => {
       links: { target: "web:def" },
     })
     expect(ok.success).toBe(true)
-    expect(CollectItem.safeParse({ id: "a", source: "s", kind: "tweet", firstSeenAt: "2026-11-28T10:00:00Z" }).success).toBe(false)
+    expect(
+      CollectItem.safeParse({ id: "a", source: "s", kind: "tweet", firstSeenAt: "2026-11-28T10:00:00Z" }).success,
+    ).toBe(false)
     expect(
       CollectItem.safeParse({
         id: "a",
@@ -52,7 +54,9 @@ describe("schemas", () => {
     expect(obs.metrics.views).toBeUndefined()
     expect(obs.missing?.reposts).toBe("not_exposed")
     expect(Observation.parse({ itemId: "x:1", measuredAt: "2026-11-28T10:00:00Z" }).metrics).toEqual({})
-    expect(Observation.safeParse({ itemId: "x:1", measuredAt: "2026-11-28T10:00:00Z", missing: { likes: "zero" } }).success).toBe(false)
+    expect(
+      Observation.safeParse({ itemId: "x:1", measuredAt: "2026-11-28T10:00:00Z", missing: { likes: "zero" } }).success,
+    ).toBe(false)
   })
 
   it("records unknown audience with a reason, never as zero", () => {
@@ -68,12 +72,18 @@ describe("schemas", () => {
       audience: [{ measuredAt: "2026-11-28T10:00:00Z", kind: "karma", value: 120 }],
     })
     expect(known.success).toBe(true)
-    expect(Actor.safeParse({ ...base, audience: [{ measuredAt: "2026-11-28T10:00:00Z", kind: "followers" }] }).success).toBe(false)
     expect(
-      Actor.safeParse({ ...base, audience: [{ measuredAt: "2026-11-28T10:00:00Z", kind: "followers", value: 0, unknown: "blocked" }] })
-        .success,
+      Actor.safeParse({ ...base, audience: [{ measuredAt: "2026-11-28T10:00:00Z", kind: "followers" }] }).success,
     ).toBe(false)
-    expect(Actor.safeParse({ ...base, audience: [{ measuredAt: "2026-11-28T10:00:00Z", kind: "fans", value: 1 }] }).success).toBe(false)
+    expect(
+      Actor.safeParse({
+        ...base,
+        audience: [{ measuredAt: "2026-11-28T10:00:00Z", kind: "followers", value: 0, unknown: "blocked" }],
+      }).success,
+    ).toBe(false)
+    expect(
+      Actor.safeParse({ ...base, audience: [{ measuredAt: "2026-11-28T10:00:00Z", kind: "fans", value: 1 }] }).success,
+    ).toBe(false)
   })
 
   it("validates pickups", () => {
@@ -82,7 +92,7 @@ describe("schemas", () => {
       kind: "media_pickup",
       pickupUrl: "https://example.com/b",
       relation: "citation",
-      evidence: { outboundLink: "https://example.com/a" },
+      evidence: { outboundLink: "https://example.com/a", rawRef: "raw/ab" },
       method: "link",
       verified: true,
       firstSeenAt: "2026-11-28T10:00:00Z",
@@ -113,7 +123,7 @@ describe("schemas", () => {
       withUniqueContent: 3,
       eligible: 1,
     }
-    expect(Coverage.safeParse({ cells: [cell] }).success).toBe(true)
+    expect(Coverage.parse({ cells: [cell] })).toEqual({ cells: [cell] })
     expect(Coverage.safeParse({ cells: [{ ...cell, items: -1 }] }).success).toBe(false)
     const report = RunReport.parse({
       runId: "r1",
@@ -128,11 +138,14 @@ describe("schemas", () => {
           failures: { blocked: 1 },
           escalations: [{ from: "http", to: "browser", count: 1 }],
           durationMs: 10,
+          coverage: { cells: [cell] },
         },
       ],
       coverage: { cells: [cell] },
     })
     expect(report.connectors[0]?.status).toBe("ok")
+    expect(report.connectors[0]?.coverage).toEqual({ cells: [cell] })
+    expect(report.coverage).toEqual({ cells: [cell] })
   })
 
   it("requires full timestamps for measuredAt and firstSeenAt, allows a day for publishedAt", () => {
@@ -155,7 +168,7 @@ describe("schemas", () => {
       itemId: "web:a",
       kind: "media_pickup",
       relation: "citation",
-      evidence: {},
+      evidence: { excerpt: "quoted", rawRef: "raw/ab" },
       firstSeenAt: "2026-11-28T10:00:00Z",
       measuredAt: "2026-11-28T10:00:00Z",
     }
@@ -169,6 +182,32 @@ describe("schemas", () => {
     }
   })
 
+  it("requires evidence and a raw pointer for link and content_id pickups, some evidence for declared", () => {
+    const base = {
+      itemId: "web:a",
+      kind: "media_pickup",
+      relation: "citation",
+      firstSeenAt: "2026-11-28T10:00:00Z",
+      measuredAt: "2026-11-28T10:00:00Z",
+    }
+    for (const method of ["link", "content_id"]) {
+      const p = { ...base, method, verified: true }
+      expect(Pickup.safeParse({ ...p, evidence: { excerpt: "q", rawRef: "r" } }).success).toBe(true)
+      expect(Pickup.safeParse({ ...p, evidence: {} }).success).toBe(false)
+      expect(Pickup.safeParse({ ...p, evidence: { rawRef: "r" } }).success).toBe(false)
+      expect(Pickup.safeParse({ ...p, evidence: { excerpt: "q" } }).success).toBe(false)
+    }
+    const declared = { ...base, method: "declared", verified: true }
+    expect(Pickup.safeParse({ ...declared, evidence: {} }).success).toBe(false)
+    expect(Pickup.safeParse({ ...declared, evidence: { excerpt: "q" } }).success).toBe(true)
+    expect(Pickup.safeParse({ ...declared, evidence: { outboundLink: "https://example.com/a" } }).success).toBe(true)
+    expect(Pickup.safeParse({ ...declared, evidence: {}, outlet: "example.com" }).success).toBe(true)
+  })
+
+  it("requires a subject label on recipe queries", () => {
+    expect(Recipe.safeParse({ sources: [{ connector: "rss", queries: [{ text: "q" }] }] }).success).toBe(false)
+  })
+
   it("rejects a counter that is both measured and missing, and a raw value without a metric", () => {
     const at = "2026-11-28T10:00:00Z"
     expect(
@@ -176,8 +215,12 @@ describe("schemas", () => {
         .success,
     ).toBe(false)
     expect(
-      Observation.safeParse({ itemId: "x:1", measuredAt: at, metrics: { views: 873400 }, rawValues: { views: "873.4K" } })
-        .success,
+      Observation.safeParse({
+        itemId: "x:1",
+        measuredAt: at,
+        metrics: { views: 873400 },
+        rawValues: { views: "873.4K" },
+      }).success,
     ).toBe(true)
     expect(Observation.safeParse({ itemId: "x:1", measuredAt: at, rawValues: { views: "873.4K" } }).success).toBe(false)
   })

@@ -38,10 +38,18 @@ function isTrackingParam(name: string): boolean {
 }
 
 /**
- * Clean a URL so that two links to the same page compare equal: lowercase
- * scheme and host, no credentials, no fragment, no default port, no tracking
- * parameters, remaining parameters sorted, no trailing slash (root included).
- * Returns the trimmed input unchanged when it is not an absolute URL.
+ * Clean an http(s) URL into a dedup key: lowercase scheme and host (the path
+ * keeps its case), no credentials, no fragment, no default port, tracking
+ * parameters removed, remaining parameters ordered by key only (the relative
+ * order of a repeated key is kept, so `?a=2&a=1` differs from `?a=1&a=2`), no
+ * trailing slash (root included, so `/a/` and `/a` are the same key).
+ *
+ * The result is only a key for deduplication: the original URL is always
+ * kept next to it. Callers pass the final URL; redirects are not followed
+ * here, so a known redirect target must be resolved before calling.
+ *
+ * Any non-http(s) scheme (`mailto:`, `urn:`, `data:`, ...) and any input that
+ * is not an absolute URL is returned trimmed and otherwise unchanged.
  */
 export function canonicalUrl(input: string): string {
   const raw = input.trim()
@@ -51,6 +59,7 @@ export function canonicalUrl(input: string): string {
   } catch {
     return raw
   }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return raw
   url.hash = ""
   url.username = ""
   url.password = ""
@@ -60,7 +69,8 @@ export function canonicalUrl(input: string): string {
   url.searchParams.forEach((value, name) => {
     if (!isTrackingParam(name)) kept.push([name, value])
   })
-  kept.sort((a, b) => (a[0] === b[0] ? (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0) : a[0] < b[0] ? -1 : 1))
+  // Array.prototype.sort is stable: equal keys keep their original order.
+  kept.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
   const query = new URLSearchParams(kept).toString()
 
   const path = url.pathname.length > 1 ? url.pathname.replace(/\/+$/, "") : ""
@@ -73,8 +83,15 @@ export async function sha256Hex(text: string): Promise<string> {
   return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("")
 }
 
-/** Id of an item that has a platform id: `source:nativeId`. */
+/**
+ * Id of an item that has a platform id: `source:nativeId`. Strings are used
+ * as given; a number must be a safe integer (larger ids lose digits, so pass
+ * them as strings) or this throws.
+ */
 export function itemId(source: string, nativeId: string | number): string {
+  if (typeof nativeId === "number" && !Number.isSafeInteger(nativeId)) {
+    throw new RangeError(`native id ${nativeId} is not a safe integer; pass it as a string`)
+  }
   return `${source}:${String(nativeId)}`
 }
 
@@ -93,7 +110,13 @@ export function normalizeText(text: string): string {
     .trim()
 }
 
-/** Exact-content id: SHA-256 of the normalised text. Same words, same fingerprint. */
-export async function textFingerprint(text: string): Promise<string> {
-  return sha256Hex(normalizeText(text))
+/**
+ * Exact-content id: SHA-256 of the normalised text. Same words, same
+ * fingerprint. Text that normalises to nothing (empty, only punctuation or
+ * symbols) has no content id: returns `undefined`, so unrelated empty items
+ * never share one.
+ */
+export async function textFingerprint(text: string): Promise<string | undefined> {
+  const normalized = normalizeText(text)
+  return normalized === "" ? undefined : sha256Hex(normalized)
 }
