@@ -67,7 +67,15 @@ export type TaskRecord = z.infer<typeof TaskRecord>
 export const SamplingRecord = z.object({
   candidate: z.string().min(1),
   decision: z.enum(["kept", "dropped"]),
+  /** Why a candidate was dropped: `band_quota`, `domain_cap`, `no_metric` or `out_of_bands`. */
   rule: z.string().optional(),
+  /** Index of the counter band the candidate fell in. */
+  band: z.number().int().nonnegative().optional(),
+  /** Host the candidate counted against. */
+  domain: z.string().optional(),
+  seed: z.number().int().optional(),
+  connector: z.string().optional(),
+  taskId: z.string().optional(),
   at: z.iso.datetime({ offset: true }),
 })
 export type SamplingRecord = z.infer<typeof SamplingRecord>

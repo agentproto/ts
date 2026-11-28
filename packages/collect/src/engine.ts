@@ -10,11 +10,13 @@ import {
   type RecipeSource,
 } from "./connector"
 import { computeCoverage } from "./coverage"
+import { createSampler, type Sampler } from "./sampling"
 import { canonicalUrl, itemIdFromUrl, sha256Hex, textFingerprint } from "./ids"
 import {
   Actor,
   CollectItem,
   type ConnectorReport,
+  type MetricName,
   type FailureCause,
   Observation,
   Pickup,
@@ -234,6 +236,16 @@ function serial() {
   }
 }
 
+function sampledOf(rows: Array<{ decision: string; rule?: string }>) {
+  const dropped: Record<string, number> = {}
+  let kept = 0
+  for (const r of rows) {
+    if (r.decision === "kept") kept++
+    else dropped[r.rule ?? "unknown"] = (dropped[r.rule ?? "unknown"] ?? 0) + 1
+  }
+  return { candidates: rows.length, kept, dropped }
+}
+
 function hostOf(url: string): string {
   try {
     return new URL(url).host.toLowerCase()
@@ -434,8 +446,17 @@ export function createCollector(options: CollectorOptions): Collector {
 
     if (mode === "new") await store.createRun(runId, recipe)
     await emit("run.start", { mode, recipeName: recipe.name })
-    if (recipe.sampling !== undefined) {
-      await emit("warning", { message: "recipe.sampling is not implemented yet and is ignored" })
+    // Counters are rebuilt from sampling.jsonl, so a resumed run decides like an uninterrupted one.
+    const samplers = new Map<string, Sampler>()
+    const samplerFor = async (connector: Connector): Promise<Sampler> => {
+      let s = samplers.get(connector.id)
+      if (!s) {
+        const prior = (await readAll(store.sampling(runId))).records.filter((r) => r.connector === connector.id)
+        const primary = connector.counters.find((c) => c.primary)?.name
+        s = createSampler(recipe.sampling!, primary, prior)
+        samplers.set(connector.id, s)
+      }
+      return s
     }
 
     const connectorIds = [...new Set(recipe.sources.map((s) => s.connector))]
@@ -677,6 +698,51 @@ export function createCollector(options: CollectorOptions): Collector {
       return { ref, items, observations, actors: (parsed.actors ?? []).map((a) => Actor.parse(a)), pickups }
     }
 
+    /**
+     * Sampling of the candidates a task's parse returned. Tasks of kind `read`
+     * (fetch by URL) are not sampled. A dropped candidate loses its item, its
+     * observations, its pickups and the actors only it referenced.
+     */
+    async function sample(entry: Entry, prepared: Prepared[]): Promise<Prepared[]> {
+      if (recipe.sampling === undefined || entry.task.kind === "read") return prepared
+      const candidates = prepared.flatMap((p) =>
+        p.items.map((item) => {
+          const metrics: Partial<Record<MetricName, number>> = {}
+          for (const o of p.observations) {
+            if (o.itemId !== item.id) continue
+            for (const [name, v] of Object.entries(o.metrics)) {
+              if (typeof v === "number" && metrics[name as MetricName] === undefined) metrics[name as MetricName] = v
+            }
+          }
+          return {
+            id: item.id,
+            kind: item.kind,
+            metrics,
+            url: item.canonicalUrl ?? item.url,
+            target: item.links?.target,
+            outboundLinks: item.outboundLinks,
+          }
+        }),
+      )
+      const sampler = await samplerFor(entry.connector)
+      const decisions = sampler.decide(entry.key, candidates)
+      for (const { decision, fresh } of decisions) {
+        if (!fresh) continue
+        await store.appendSampling(runId, { ...decision, connector: entry.connector.id, taskId: entry.key, at: iso() })
+      }
+      const dropped = new Set(decisions.filter((d) => d.decision.decision === "dropped").map((d) => d.decision.candidate))
+      if (dropped.size === 0) return prepared
+      const keptRefs = new Set(prepared.flatMap((p) => p.items.filter((i) => !dropped.has(i.id))).flatMap((i) => [i.authorRef, i.submitterRef]))
+      const droppedRefs = new Set(prepared.flatMap((p) => p.items.filter((i) => dropped.has(i.id))).flatMap((i) => [i.authorRef, i.submitterRef]))
+      return prepared.map((p) => ({
+        ...p,
+        items: p.items.filter((i) => !dropped.has(i.id)),
+        observations: p.observations.filter((o) => !dropped.has(o.itemId)),
+        pickups: p.pickups.filter((k) => !dropped.has(k.itemId) && !(k.pickupItemId && dropped.has(k.pickupItemId))),
+        actors: p.actors.filter((a) => !droppedRefs.has(a.ref) || keptRefs.has(a.ref)),
+      }))
+    }
+
     /** The owner of an item id: where an observation or a link to it must point. */
     async function resolve(idMap: Map<string, string>, id: string): Promise<string> {
       return idMap.get(id) ?? (await store.seenGet(seenKey("id", id))) ?? id
@@ -901,7 +967,7 @@ export function createCollector(options: CollectorOptions): Collector {
           return e instanceof Error ? e.message : String(e)
         }
         // Everything is valid: from here on, write.
-        await ingest(prepared, counters)
+        await ingest(await sample(entry, prepared), counters)
         tasks.forEach((task, j) => {
           const k = key(connector.id, task.id)
           if (known.has(k)) return
@@ -951,22 +1017,23 @@ export function createCollector(options: CollectorOptions): Collector {
     if (fatal !== undefined) {
       // Best effort: leave a report of what is on disk, then surface the failure.
       try {
-        await write(async () => store.writeReport(runId, await buildReport(runId, startedAt, states)))
+        await write(async () => store.writeReport(runId, await buildReport(runId, recipe, startedAt, states)))
       } catch {
         // The store is what failed; the run error below says so.
       }
       throw new CollectRunError(runId, fatal)
     }
     if (aborted()) await emit("cancelled", {})
-    const report = await buildReport(runId, startedAt, states)
+    const report = await buildReport(runId, recipe, startedAt, states)
     await emit("run.end", { connectors: report.connectors.map((c) => ({ connector: c.connector, status: c.status })) })
     await write(() => store.writeReport(runId, report))
     return report
   }
 
   /** The report is rebuilt from the task records, so it covers the whole run and survives a resume. */
-  async function buildReport(runId: string, startedAt: string, states: Map<string, ConnectorState>): Promise<RunReport> {
+  async function buildReport(runId: string, recipe: Recipe, startedAt: string, states: Map<string, ConnectorState>): Promise<RunReport> {
     const { records: tasks } = await readAll(store.tasks(runId))
+    const samplingRows = recipe.sampling !== undefined ? (await readAll(store.sampling(runId))).records : []
     const coverage = await computeCoverage(
       store,
       [...states.values()].flatMap((s) => (s.connector ? [s.connector] : [])),
@@ -1033,6 +1100,7 @@ export function createCollector(options: CollectorOptions): Collector {
         failures,
         escalations: [...escalations.values()],
         durationMs: sum.durationMs,
+        ...(recipe.sampling !== undefined ? { sampled: sampledOf(samplingRows.filter((r) => r.connector === s.id)) } : {}),
         coverage: { cells: coverage.cells.filter((c) => c.platform === s.id) },
       })
     }

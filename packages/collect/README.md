@@ -76,9 +76,7 @@ filesystem (Node built-ins only).
   `withPrimaryMetric` counts only a declared primary counter. The transports are
   contracts only here (`HttpTransport`, `BrowserTransport`, `SecretsPort`,
   `TransportError`); implementations are supplied by the caller.
-- **Not implemented yet**: `Recipe.sampling` (bands, per-domain cap, seed) is
-  accepted by the schema but ignored by the engine (it emits a `warning`
-  event); it comes in a follow-up PR.
+- `Recipe.sampling` is applied by the engine (see "Recipe sampling" below).
 
 ## Rules baked into the schemas
 
@@ -172,3 +170,56 @@ try {
   missing step throws `StoreMigrationError`. `initStore` creates `collect.json`
   with an exclusive create, so concurrent calls are safe.
 - `rebuildSeenIndex()` rewrites `seen.idx` from the current item of each id.
+
+## Recipe sampling
+
+`recipe.sampling` thins the candidate items a connector's `parse` returns from
+listing or search tasks. Tasks of `kind: "read"` (an item fetched by URL) are
+never sampled. Without a `sampling` block nothing changes.
+
+```yaml
+sampling:
+  bands:
+    - { metric: views, min: 0, max: 999, quota: 50 }
+    - { min: 1000, max: 99999, quota: 50 }   # metric omitted: the connector's primary counter
+  keepMissingMetric: false
+  perDomainCap: 2
+  seed: 42
+```
+
+Steps, in this order, for each candidate:
+
+1. **Bands.** The candidate falls in the first band whose range contains its
+   counter value (`min` and `max` are both inclusive; either may be omitted).
+   The value comes from the observations the same parse returned for that item.
+   A candidate with no value for any band's counter is dropped with rule
+   `no_metric`, or kept outside every band when `keepMissingMetric` is true.
+   A candidate with a value that fits no band is dropped as `out_of_bands`.
+   A band keeps at most `quota` candidates (`band_quota` otherwise).
+2. **Per-domain cap.** At most `perDomainCap` kept items per host. The host is
+   the lower-cased hostname with a leading `www.` stripped (no public-suffix
+   list) of the item's canonical URL; for a `submission` it is the host of
+   `links.target` when that is a URL, else of the first `outboundLinks` entry,
+   so a submission counts against the article's site, not the aggregator's.
+   Beyond the cap the candidate is dropped as `domain_cap`. A candidate that
+   fails a rule does not use up the quota or cap of the other rule.
+3. **Seed.** When a quota or cap forces a choice, `seed` makes it
+   deterministic: within each task's candidates, sorted by stable id, a
+   mulberry32 shuffle seeded from `seed` and the task decides the order, so the
+   same recipe, seed and candidates give the same selection whatever the order
+   the connector listed them in. Without a seed the first seen in plan order
+   is kept. Quotas and caps are shared by all tasks of a connector, in the
+   order tasks reach ingestion; use `workers: 1` when the selection across tasks
+   must follow plan order exactly.
+
+Every candidate gets exactly one line in `runs/<id>/sampling.jsonl`:
+`candidate`, `decision` (`kept` or `dropped`), `rule` when dropped, `band`,
+`domain`, `seed`, `connector`, `taskId`, `at`. A dropped candidate writes no
+item, no observation, no pickup, no seen key, and no actor only it
+referenced, and is not counted as new, so coverage counts kept items only.
+Candidates already in the store from an earlier run are sampled like any other.
+
+On `resume`, the counters are rebuilt from `sampling.jsonl` and a candidate
+already decided keeps its decision, so an interrupted run resumed makes the
+same choices as an uninterrupted one. The report adds, per connector,
+`sampled: { candidates, kept, dropped: { [rule]: n } }`.
