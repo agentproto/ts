@@ -2129,6 +2129,16 @@ export async function startHttpServer(
     return authorize(req, res)
   }
 
+  /** The request itself carries the per-boot daemon token (bearer header or
+   *  `?token=`): a credential a foreign page cannot hold, whatever its Origin. */
+  function presentsPerBootToken(req: IncomingMessage): boolean {
+    if (!opts.token) return false
+    if (req.headers.authorization === `Bearer ${opts.token}`) return true
+    const urlStr = req.url ?? ""
+    if (!urlStr.includes("?")) return false
+    return new URLSearchParams(urlStr.slice(urlStr.indexOf("?") + 1)).get("token") === opts.token
+  }
+
   /**
    * Per-boot auth gate for mutating /sessions/* routes and the WS
    * upgrade for /sessions/:id/pty. Accepts EITHER:
@@ -3826,6 +3836,35 @@ export async function startHttpServer(
             ...(opts.appRegistry ? { appRegistry: opts.appRegistry } : {}),
             ...(opts.assetLinksPath ? { assetLinksPath: opts.assetLinksPath } : {}),
           })
+          return
+        }
+
+        // Cross-origin READ gate. CORS answers `*` to an untrusted origin (that is
+        // what lets a page probe `/health`), so every other GET/HEAD route that
+        // returns local state must refuse a foreign browser Origin (including
+        // `null`) itself: otherwise any web page the user visits could read it.
+        // `guardBrowserOrigin` lets through no-Origin native clients, allowlisted
+        // origins, a widget embed token and the bearer; a link-session credential
+        // keeps its own path. Exempt: `/health` (public probe), `/apps/*`, `/mcp*`
+        // and `/approvals*` (their own origin/token gates). Writes keep their own gates
+        // (and their 401 contract).
+        if (
+          (req.method === "GET" || req.method === "HEAD") &&
+          path !== "/health" &&
+          !path.startsWith("/apps/") &&
+          path !== "/mcp" &&
+          !path.startsWith("/mcp/") &&
+          // `/approvals*` runs `guardBrowserOrigin` itself (with the link-session and
+          // `approvals.webOrigins` rules), so it keeps its own contract.
+          path !== "/approvals" &&
+          !path.startsWith("/approvals/") &&
+          // A device token reads sessions only when its grant says so (checked by the route).
+          !(extractDeviceToken(req) !== undefined && SESSION_READ_RE.test(path) && deviceMaySessionRead(req)) &&
+          !isScreencastSessionsRoute(path) && // gated (401) by `checkSessionsToken` below
+          !presentsPerBootToken(req) &&
+          appLinkSessionReadAuth(req, path, req.method, opts.appLinkKeyPath) === undefined &&
+          guardBrowserOrigin(req, res)
+        ) {
           return
         }
 
