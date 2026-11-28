@@ -732,8 +732,9 @@ export function createCollector(options: CollectorOptions): Collector {
       }
       const dropped = new Set(decisions.filter((d) => d.decision.decision === "dropped").map((d) => d.decision.candidate))
       if (dropped.size === 0) return prepared
-      const keptRefs = new Set(prepared.flatMap((p) => p.items.filter((i) => !dropped.has(i.id))).flatMap((i) => [i.authorRef, i.submitterRef]))
-      const droppedRefs = new Set(prepared.flatMap((p) => p.items.filter((i) => dropped.has(i.id))).flatMap((i) => [i.authorRef, i.submitterRef]))
+      const refsOf = (i: CollectItem) => [i.authorRef, i.submitterRef, ...(i.parts ?? []).map((part) => part.authorRef)]
+      const keptRefs = new Set(prepared.flatMap((p) => p.items.filter((i) => !dropped.has(i.id))).flatMap(refsOf))
+      const droppedRefs = new Set(prepared.flatMap((p) => p.items.filter((i) => dropped.has(i.id))).flatMap(refsOf))
       return prepared.map((p) => ({
         ...p,
         items: p.items.filter((i) => !dropped.has(i.id)),
