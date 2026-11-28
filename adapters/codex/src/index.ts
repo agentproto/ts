@@ -262,6 +262,31 @@ export const codex: AgentCliHandle = defineHarness({
       description:
         "Optional Codex model ID. Omit it to use the model selected by the current ChatGPT or API-key account; the ACP bridge validates explicit IDs against that account.",
     },
+    // Both ride the wrapper's `CODEX_CONFIG` JSON (merged into codex's session
+    // config, like `developer_instructions`); the keys are codex's own
+    // `service_tier` and `model_reasoning_effort` config keys. Absent option
+    // ⇒ nothing is set and the account/model defaults apply. The wrapper
+    // passes the JSON through, so a wrong literal would silently no-op: the
+    // enums mirror codex-rs `ServiceTier` (fast | flex, protocol/config_types.rs)
+    // and `ReasoningEffort` (none | minimal | low | medium | high | xhigh | …,
+    // protocol/openai_models.rs), read 2026-11-28; `max`/`ultra`/`persistent`
+    // are left out because the pinned codex may not know them.
+    {
+      id: "service_tier",
+      type: "enum",
+      enum: ["fast", "flex"],
+      description:
+        "Codex service tier. `fast` routes to the priority tier (lower latency, faster decisions; billed at the account's fast-mode rate); `flex` the cheaper, slower one. Omit it for the account default.",
+      env: { CODEX_CONFIG: '{"service_tier":"{value}"}' },
+    },
+    {
+      id: "reasoning_effort",
+      type: "enum",
+      enum: ["none", "minimal", "low", "medium", "high", "xhigh"],
+      description:
+        "Codex reasoning effort for the session (`model_reasoning_effort`). Lower is faster and cheaper. Omit it for the model's default.",
+      env: { CODEX_CONFIG: '{"model_reasoning_effort":"{value}"}' },
+    },
   ],
   continuation: {
     default: "native-resume",

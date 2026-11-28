@@ -121,7 +121,9 @@ export function composeSpawn(
   const prepend: string[] = []
   const append: string[] = []
   // Always-on manifest env goes in first so a selected mode/option can
-  // still override any key it also declares (mode/option intent wins).
+  // still override any key it also declares (mode/option intent wins). One
+  // exception for options: when both values are JSON objects they are
+  // deep-merged (an option's keys win), not replaced.
   const env: Record<string, string> = { ...(handle.env ?? {}) }
   const envUnset: string[] = []
 
@@ -191,7 +193,11 @@ export function composeSpawn(
       const patch = renderOptionPatch(option, value)
       prepend.push(...patch.prepend)
       append.push(...patch.append)
-      Object.assign(env, patch.env)
+      for (const [key, val] of Object.entries(patch.env)) {
+        // Two options may feed one inline JSON config channel (codex's
+        // CODEX_CONFIG): merge their objects instead of the last clobbering.
+        env[key] = key in env ? mergeJsonObjects(env[key]!, val) : val
+      }
       if (patch.envUnset.length) envUnset.push(...patch.envUnset)
     }
   }
@@ -398,4 +404,29 @@ function interpolateEnv(
     out[k] = v.replace(/\{value\}/g, value)
   }
   return out
+}
+
+function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v)
+}
+
+function deepMerge(base: Record<string, unknown>, over: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...base }
+  for (const [k, v] of Object.entries(over)) {
+    const prev = out[k]
+    out[k] = isPlainObject(prev) && isPlainObject(v) ? deepMerge(prev, v) : v
+  }
+  return out
+}
+
+/** `over` wins; when both parse as JSON objects they are deep-merged. */
+function mergeJsonObjects(base: string, over: string): string {
+  try {
+    const a: unknown = JSON.parse(base)
+    const b: unknown = JSON.parse(over)
+    if (isPlainObject(a) && isPlainObject(b)) return JSON.stringify(deepMerge(a, b))
+  } catch {
+    // not JSON: the later value replaces
+  }
+  return over
 }

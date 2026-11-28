@@ -591,3 +591,36 @@ describe("resolveContinuationStrategy (AIP-45)", () => {
     expect(resolveContinuationStrategy(bare, undefined)).toBe("none")
   })
 })
+
+describe("composeSpawn: options sharing one JSON env channel", () => {
+  const opt = (id: string, key: string) => ({
+    id,
+    type: "string" as const,
+    env: { INLINE_CONFIG: `{"${key}":"{value}"}` },
+  })
+
+  it("deep-merges JSON-object env values of two options instead of the last one clobbering the first", () => {
+    const h = handle({ options: [opt("a", "first"), opt("b", "second")] })
+    const { env } = composeSpawn(h, { options: { a: "1", b: "2" } })
+    expect(JSON.parse(env.INLINE_CONFIG!)).toEqual({ first: "1", second: "2" })
+  })
+
+  it("a single option is unchanged, and non-JSON values still replace (last wins)", () => {
+    const h = handle({
+      options: [
+        opt("a", "first"),
+        { id: "p", type: "string", env: { PLAIN: "{value}" } },
+        { id: "q", type: "string", env: { PLAIN: "q-{value}" } },
+      ],
+    })
+    const { env } = composeSpawn(h, { options: { a: "1", p: "x", q: "y" } })
+    expect(JSON.parse(env.INLINE_CONFIG!)).toEqual({ first: "1" })
+    expect(env.PLAIN).toBe("q-y")
+  })
+
+  it("an option's JSON also deep-merges into a same-key JSON value of the manifest env, its keys winning", () => {
+    const h = handle({ env: { INLINE_CONFIG: '{"base":"b","first":"old"}' }, options: [opt("a", "first")] })
+    const { env } = composeSpawn(h, { options: { a: "1" } })
+    expect(JSON.parse(env.INLINE_CONFIG!)).toEqual({ base: "b", first: "1" })
+  })
+})
