@@ -4418,8 +4418,9 @@ async function spawnAgentSessionOnce(
   // the resolved role's default (`RoleProfile.deferredTools`, on for
   // `executor`). `undefined` means only a discovery-capable harness had no
   // opinion: the self-mount ref carries no `?deferred=` and the gateway's
-  // boot-time `defaults.mcp.deferredTools` applies. Skip the adapter lookup
-  // when the spawn already decided or the box is remote.
+  // boot-time `defaults.mcp.deferredTools` applies. The adapter lookup also
+  // supplies the manifest `deprecated` notice, so it runs for every local
+  // spawn; only a remote box skips it.
   const adapterCaps =
     input.sandbox === undefined ? await resolveAgentAdapter(input.adapter) : undefined
   if (adapterCaps?.deprecated) {

@@ -2305,6 +2305,19 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
     }
   })
 
+  it("a deprecated harness warns even when deferredTools is explicit, and the explicit value wins", async () => {
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession: vi.fn(async () => fakeAgentSession()) as never,
+      commandPreview: "mock-adapter",
+      nativeToolSearch: true,
+      deprecated: { replacedBy: "antigravity" },
+    })
+    const { deps } = baseDeps({ resolveAgentAdapter })
+    const result = await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp", deferredTools: true })
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.warnings?.join("\n")).toContain('use "antigravity"')
+  })
+
   it("an unknown configured default agent warns once and falls back to the built-in default", async () => {
     const buildOrchestratorMcp = makeBuildOrchestratorMcp()
     const { deps } = baseDeps({
