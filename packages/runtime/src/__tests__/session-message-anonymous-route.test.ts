@@ -7,7 +7,8 @@
 import { describe, it, expect, vi } from "vitest"
 import { createServer } from "node:http"
 import { AddressInfo } from "node:net"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync } from "node:fs"
+import { rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -20,6 +21,16 @@ import { DEFAULT_MESSAGING_DEFAULTS, type ResolvedMessagingDefaults } from "../m
 import { createSessionMessage } from "../session-message.js"
 import type { ConversationStore } from "../conversations.js"
 import type { HeartbeatRunner } from "../heartbeat.js"
+
+/**
+ * Remove the temp transcript dir. `registry.shutdown()` returns before its
+ * async transcript writes finish, so a plain recursive rm can race a late
+ * write and fail with ENOTEMPTY. The async `rm` retries without blocking the
+ * event loop, so the pending writer can settle between attempts.
+ */
+async function removeTmp(dir: string): Promise<void> {
+  await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
+}
 
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -98,7 +109,7 @@ async function route(anonymousSend: "block" | "label", urgency = "interrupt") {
   } finally {
     await http.stop()
     registry.shutdown()
-    rmSync(tmp, { recursive: true, force: true })
+    await removeTmp(tmp)
   }
 }
 
@@ -180,7 +191,7 @@ async function replyRoute(urgency = "interrupt") {
   } finally {
     await http.stop()
     registry.shutdown()
-    rmSync(tmp, { recursive: true, force: true })
+    await removeTmp(tmp)
   }
 }
 
