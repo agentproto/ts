@@ -167,6 +167,7 @@ Flags:
 | `--method <oauth-bearer\|api-key>` | Required. How the credential is used at spawn time. |
 | `--label <text>` | Human-readable name for the profile. |
 | `--source <name>` | Source tag for oauth-bearer profiles (enables self-refreshing). |
+| `--codex-home <dir>` | (with `--source codex`) Give the profile its own Codex login directory (`CODEX_HOME`), so each workspace keeps its own `auth.json`. |
 | `--subaccount <kind>:<id>` | Pin the profile to a sub-account (org / workspace / project) of its account; see `auth subaccounts`. |
 | `--route <route>` | Repeatable. An ADDITIONAL billing route this credential also serves, beyond `<endpoint>` — e.g. `--route opencode-go` for a key billed on both the opencode-go Go route and the opencode Zen route. Stored as the profile's `routes`. |
 | `--credential-file <path>` | Read the credential from a file. |
