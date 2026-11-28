@@ -30,6 +30,23 @@ filesystem (Node built-ins only).
   that expose a `skipped` count of unreadable lines.
 - **`@agentproto/collect/node`**: `initStore(path)` / `openStore(path)`, the
   same port on disk (Node built-ins only). See "On-disk store" below.
+- **Engine**: `createCollector({ store, transports, secrets, connectors, clock?, random? })`
+  with `run(recipe, { signal, onEvent, runId? })` and `resume(runId)`. A
+  connector (`defineConnector`, `registerConnector`) plans tasks, fetches
+  through the transports it declares (`api`, `http`, `browser`, tried in
+  order; 401/403/429, a challenge page or empty content moves a task to the
+  next one and the report records the escalation), and parses stored raws.
+  The engine stores every raw, dedups (native id, canonical URL, content id),
+  writes, then marks the task `done`. A connector with no usable transport or
+  a missing secret is `skipped` and the run goes on. Scheduling: a bounded
+  pool (`recipe.workers`, default 8) for non-browser tasks, one browser task
+  at a time, a per-host interval shared by all connectors, a per-connector
+  cap, one writer, the store lock held for the whole run.
+  `resume(runId)` reloads the frozen recipe and the task log, never refetches
+  a `done` task, and redoes `pending`, `failed` and `skipped` ones.
+  `computeCoverage(store)` gives the coverage cells. The transports are
+  contracts only here (`HttpTransport`, `BrowserTransport`, `SecretsPort`,
+  `TransportError`); implementations are supplied by the caller.
 
 ## Rules baked into the schemas
 

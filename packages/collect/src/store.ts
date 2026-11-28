@@ -31,6 +31,10 @@ export const TaskRecord = z.object({
   status: TaskStatus,
   transport: z.string().optional(),
   reason: z.string().optional(),
+  /** Why a failed task failed. */
+  cause: FailureCause.optional(),
+  /** The task as the connector planned it (`id`, `kind`, `params`), so a run can be resumed from its log alone. */
+  payload: z.record(z.string(), z.unknown()).optional(),
   updatedAt: z.iso.datetime({ offset: true }),
 })
 export type TaskRecord = z.infer<typeof TaskRecord>

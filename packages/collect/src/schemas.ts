@@ -293,6 +293,8 @@ export const ConnectorReport = z.object({
   connector: z.string().min(1),
   status: z.enum(["ok", "partial", "failed", "skipped"]).default("ok"),
   skippedReason: z.string().optional(),
+  /** Why the status is `failed` or `partial`. */
+  reason: z.string().optional(),
   tasks: z.object({
     planned: z.number().int().nonnegative(),
     done: z.number().int().nonnegative(),
