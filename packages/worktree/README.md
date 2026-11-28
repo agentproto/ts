@@ -125,7 +125,7 @@ pnpm can only hardlink or clone packages inside one volume; across volumes it
 silently copies every package into every worktree. Setup hooks therefore run
 with `npm_config_store_dir` pointing at one store per worktrees pool
 (`<pool>/.pnpm-store`, same volume as the worktrees by construction;
-override with `AGENTPROTO_WORKTREES_PNPM_STORE_DIR`) and
+this replaces a `store-dir` from pnpm's global config for those hooks; override with `AGENTPROTO_WORKTREES_PNPM_STORE_DIR`) and
 `npm_config_package_import_method=clone-or-copy` (clone where the filesystem
 supports it, copy only as a last resort). This applies to the setup hook's own
 process; a manual `pnpm install` in a plain shell needs the same two
@@ -135,10 +135,13 @@ Removing a worktree (`worktree rm`, `gc`, `worktree.cleanup`) also deletes its
 own out-of-tree virtual store when its `pnpm-workspace.yaml` `virtualStoreDir`
 (or `.npmrc` `virtual-store-dir`) names a directory outside the worktree that
 carries the worktree's own name, then runs `pnpm store prune` on the pool's
-shared store in the background. Set
-`AGENTPROTO_WORKTREES_PNPM_STORE_PRUNE=0` to skip the prune (with clone or copy
-imports pnpm cannot see which packages are still used, so a prune may drop
-packages the next install has to fetch again).
+shared store in the background, when `AGENTPROTO_WORKTREES_PNPM_STORE_PRUNE=1`
+is set. The prune is opt-in: with clone or copy imports pnpm cannot see which
+packages are still used, so a prune can drop most of the store (the next
+install fetches again), and it can race with an install in another worktree.
+The virtual store is only deleted when it is a real directory outside the
+worktree, named like the worktree, that looks like a pnpm virtual store and
+holds no `.git`.
 
 **Precedence** (highest wins): an explicit `worktree.provision` tool input >
 this local file > `agentproto.json`'s committed `worktree.depsCmd`/

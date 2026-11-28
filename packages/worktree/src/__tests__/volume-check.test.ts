@@ -46,6 +46,31 @@ describe("checkWorktreesRootVolume", () => {
     expect(warning).toBeDefined()
   })
 
+  it("is silent when the root is on a different device than both / and home", async () => {
+    expect(
+      await checkWorktreesRootVolume("/mnt/x", {
+        deviceOf: async (p) => (p === "/mnt/x" ? 9 : p === "/" ? 1 : 2),
+        systemPaths: ["/", "/home"],
+        freeSpace: async () => ({ freeBytes: 0, totalBytes: 1 }),
+      }),
+    ).toBeUndefined()
+  })
+
+  it("probes the nearest existing ancestor of a root that does not exist yet", async () => {
+    const seen: string[] = []
+    const warning = await checkWorktreesRootVolume("/a/b/c", {
+      deviceOf: async (p) => {
+        seen.push(p)
+        if (p === "/a/b/c" || p === "/a/b") throw new Error("ENOENT")
+        return 1
+      },
+      systemPaths: ["/system"],
+      freeSpace: async () => ({ freeBytes: 1 * GiB, totalBytes: 100 * GiB }),
+    })
+    expect(seen).toContain("/a")
+    expect(warning).toContain("/a/b/c")
+  })
+
   it("never throws: a probe failure means no warning", async () => {
     expect(
       await checkWorktreesRootVolume("/x", {

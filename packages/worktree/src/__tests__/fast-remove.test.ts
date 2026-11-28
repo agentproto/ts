@@ -354,6 +354,7 @@ describe("removeWorktreeFast: the worktree's own pnpm virtual store", () => {
 		const vstore = join(repoRoot, "vstores", slug)
 		mkdirSync(vstore, { recursive: true })
 		writeFileSync(join(vstore, "pkg.txt"), "x")
+		writeFileSync(join(vstore, "lock.yaml"), "lockfileVersion: 9\n")
 		writeFileSync(join(wtDir, "pnpm-workspace.yaml"), `virtualStoreDir: ${vstore}\n`)
 		return { repoRoot, wtDir, vstore }
 	}
@@ -372,7 +373,7 @@ describe("removeWorktreeFast: the worktree's own pnpm virtual store", () => {
 		expect(await readFile(join(vstoreTrash!, "pkg.txt"), "utf8")).toBe("x")
 	}, 20_000)
 
-	it("prunes the shared store once the worktree is gone", async () => {
+	it("prunes the shared store once the worktree is gone, when pruning is switched on", async () => {
 		const { repoRoot, wtDir } = await withVirtualStore("vs-prune")
 		const storeDir = join(dirname(wtDir), ".pnpm-store")
 		mkdirSync(storeDir, { recursive: true })
@@ -382,18 +383,20 @@ describe("removeWorktreeFast: the worktree's own pnpm virtual store", () => {
 			force: true,
 			spawnRemoval: () => {},
 			pruneStore: (dir) => pruned.push(dir),
+			env: { AGENTPROTO_WORKTREES_PNPM_STORE_PRUNE: "1" },
 		})
 
 		expect(pruned).toEqual([storeDir])
 	}, 20_000)
 
-	it("does not prune when no shared store exists, nor when pruning is switched off", async () => {
+	it("does not prune when no shared store exists, nor by default", async () => {
 		const a = await withVirtualStore("vs-none")
 		const prunedA: string[] = []
 		await removeWorktreeFast(a.repoRoot, a.wtDir, {
 			force: true,
 			spawnRemoval: () => {},
 			pruneStore: (dir) => prunedA.push(dir),
+			env: { AGENTPROTO_WORKTREES_PNPM_STORE_PRUNE: "1" },
 		})
 		expect(prunedA).toEqual([])
 
@@ -404,7 +407,7 @@ describe("removeWorktreeFast: the worktree's own pnpm virtual store", () => {
 			force: true,
 			spawnRemoval: () => {},
 			pruneStore: (dir) => prunedB.push(dir),
-			env: { AGENTPROTO_WORKTREES_PNPM_STORE_PRUNE: "0" },
+			env: {},
 		})
 		expect(prunedB).toEqual([])
 	}, 20_000)

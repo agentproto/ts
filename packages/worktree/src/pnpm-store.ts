@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process"
-import { existsSync, readFileSync, statSync } from "node:fs"
+import { existsSync, lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs"
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
 
 /**
@@ -23,7 +23,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from "node:pat
 /** Explicit pin for the shared pnpm store directory used by setup hooks. */
 export const WORKTREES_PNPM_STORE_DIR_ENV = "AGENTPROTO_WORKTREES_PNPM_STORE_DIR"
 
-/** `0` / `false` / `off` disables the `pnpm store prune` run after a worktree removal. */
+/** `1` / `true` / `on` enables the `pnpm store prune` run after a worktree removal (off by default). */
 export const WORKTREES_PNPM_STORE_PRUNE_ENV = "AGENTPROTO_WORKTREES_PNPM_STORE_PRUNE"
 
 /** Directory name of the shared store inside a worktrees pool. */
@@ -54,10 +54,15 @@ export function worktreesPnpmStoreEnv(worktreePath: string, env: NodeJS.ProcessE
   }
 }
 
-/** True unless pruning is switched off through {@link WORKTREES_PNPM_STORE_PRUNE_ENV}. */
+/**
+ * True when pruning was switched on through {@link WORKTREES_PNPM_STORE_PRUNE_ENV}.
+ * Opt-in: with clone or copy imports pnpm cannot tell which packages are still
+ * used, so a prune can drop most of the store and make every install fetch
+ * again; and a prune can race with an install running in another worktree.
+ */
 export function pnpmStorePruneEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const raw = env[WORKTREES_PNPM_STORE_PRUNE_ENV]?.trim().toLowerCase()
-  return !(raw === "0" || raw === "false" || raw === "off")
+  return raw === "1" || raw === "true" || raw === "on"
 }
 
 function unquote(raw: string): string {
@@ -79,43 +84,53 @@ function readIfFile(path: string): string | undefined {
  * `virtualStoreDir`, or `.npmrc` `virtual-store-dir`) points its virtual store
  * at, when that directory is a per-worktree one OUTSIDE the worktree.
  *
- * Only a path that is outside the worktree (an inside one is deleted with it),
- * exists, is not an ancestor of the worktree, and has the worktree's own name
- * as its basename is returned. That last rule is what makes it safe to delete:
- * a directory shared by several worktrees is never named after just one.
- * The last occurrence of a key wins, as a per-worktree override appended to a
- * committed file does.
+ * Those config files are versioned, so their content is untrusted input to a
+ * deletion. A path is returned only when ALL hold: it is outside the worktree
+ * and not an ancestor of it (compared by realpath), it is a real directory
+ * (not a symlink), its basename is the worktree's own name, it looks like a
+ * pnpm virtual store (holds `lock.yaml` or `node_modules`), and it holds no
+ * `.git` (so another worktree or a checkout is never taken). `pnpm-workspace.yaml`
+ * wins over `.npmrc`, as in pnpm; the last occurrence of a key wins.
  */
 export function findWorktreeVirtualStore(worktreePath: string): string | undefined {
-  const wt = resolve(worktreePath)
-  let found: string | undefined
-  const yaml = readIfFile(join(wt, "pnpm-workspace.yaml"))
-  if (yaml) {
-    for (const line of yaml.split("\n")) {
-      const m = /^virtualStoreDir\s*:\s*(.+)$/.exec(line)
-      if (m) found = unquote(m[1]!)
-    }
+  let wt: string
+  try {
+    wt = realpathSync(resolve(worktreePath))
+  } catch {
+    return undefined
   }
+  let found: string | undefined
   const npmrc = readIfFile(join(wt, ".npmrc"))
   if (npmrc) {
-    for (const line of npmrc.split("\n")) {
+    for (const line of npmrc.split(/\r?\n/)) {
       const m = /^\s*virtual-store-dir\s*=\s*(.+)$/.exec(line)
       if (m) found = unquote(m[1]!)
     }
   }
+  const yaml = readIfFile(join(wt, "pnpm-workspace.yaml"))
+  if (yaml) {
+    for (const line of yaml.split(/\r?\n/)) {
+      const m = /^virtualStoreDir\s*:\s*(.+)$/.exec(line)
+      if (m) found = unquote(m[1]!)
+    }
+  }
   if (!found) return undefined
-  const target = resolve(wt, found)
-  const rel = relative(wt, target)
-  if (rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))) return undefined // inside the worktree
-  const up = relative(target, wt)
-  if (up === "" || (!up.startsWith("..") && !isAbsolute(up))) return undefined // ancestor of the worktree
-  if (basename(target) !== basename(wt)) return undefined
+  const wanted = resolve(wt, found)
   try {
-    if (!statSync(target).isDirectory()) return undefined
+    if (lstatSync(wanted).isSymbolicLink() || !lstatSync(wanted).isDirectory()) return undefined
+    const target = realpathSync(wanted)
+    const rel = relative(wt, target)
+    if (rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))) return undefined // inside the worktree
+    const up = relative(target, wt)
+    if (up === "" || (!up.startsWith("..") && !isAbsolute(up))) return undefined // ancestor of the worktree
+    if (basename(target) !== basename(wt)) return undefined
+    const entries = readdirSync(target)
+    if (entries.includes(".git")) return undefined
+    if (!entries.includes("lock.yaml") && !entries.includes("node_modules")) return undefined
+    return target
   } catch {
     return undefined
   }
-  return target
 }
 
 /** The shared store of `worktreePath`'s pool if it exists on disk. */

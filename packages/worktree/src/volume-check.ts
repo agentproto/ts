@@ -66,9 +66,9 @@ export async function checkWorktreesRootVolume(root: string, probes: VolumeProbe
     if (!onSystem) return undefined
     const { freeBytes, totalBytes } = await freeSpace(probe)
     if (freeBytes >= LOW_FREE_BYTES && (totalBytes <= 0 || freeBytes / totalBytes >= LOW_FREE_RATIO)) return undefined
-    const freeGiB = Math.round(freeBytes / GiB)
+    const freeGiB = Math.max(0, Math.floor(freeBytes / GiB))
     return (
-      `worktrees root ${root} is on the system disk, which has only about ${freeGiB} GiB free. ` +
+      `worktrees root ${root} is on the disk holding your home directory, which has only about ${freeGiB} GiB free. ` +
       `Worktrees of dependency-heavy repos can take several GiB each. ` +
       `Point it at a larger volume: \`agentproto config set worktrees.root <dir>\` or set AGENTPROTO_WORKTREES_ROOT.`
     )

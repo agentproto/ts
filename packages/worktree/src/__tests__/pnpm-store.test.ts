@@ -5,7 +5,7 @@
  */
 
 import { afterEach, describe, expect, it } from "vitest"
-import { mkdtemp, mkdir, rm, writeFile, readFile } from "node:fs/promises"
+import { mkdtemp, mkdir, rm, writeFile, readFile, symlink } from "node:fs/promises"
 import { existsSync, realpathSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -98,6 +98,7 @@ describe("findWorktreeVirtualStore", () => {
     const vstores = join(base, "vstores")
     await mkdir(wt, { recursive: true })
     await mkdir(join(vstores, "feat"), { recursive: true })
+    await writeFile(join(vstores, "feat", "lock.yaml"), "lockfileVersion: 9\n")
     if (yaml !== null) await writeFile(join(wt, "pnpm-workspace.yaml"), yaml.replaceAll("{VS}", vstores))
     if (npmrc !== undefined) await writeFile(join(wt, ".npmrc"), npmrc.replaceAll("{VS}", vstores))
     return { wt, vstores }
@@ -134,6 +135,48 @@ describe("findWorktreeVirtualStore", () => {
     expect(findWorktreeVirtualStore(wt)).toBeUndefined()
     const bare = await setup(null)
     expect(findWorktreeVirtualStore(bare.wt)).toBeUndefined()
+  })
+
+  it("refuses a same-named directory that is a git worktree or checkout", async () => {
+    const base = await tmp("wt-vstore-")
+    const wt = join(base, "pool", "feat")
+    const other = join(base, "other-repo", "feat")
+    await mkdir(wt, { recursive: true })
+    await mkdir(other, { recursive: true })
+    await writeFile(join(other, ".git"), "gitdir: /x\n")
+    await writeFile(join(other, "lock.yaml"), "x")
+    await writeFile(join(wt, "pnpm-workspace.yaml"), `virtualStoreDir: ../../other-repo/feat\n`)
+    expect(findWorktreeVirtualStore(wt)).toBeUndefined()
+  })
+
+  it("refuses a same-named directory that does not look like a pnpm virtual store", async () => {
+    const base = await tmp("wt-vstore-")
+    const wt = join(base, "pool", "feat")
+    const other = join(base, "docs", "feat")
+    await mkdir(wt, { recursive: true })
+    await mkdir(other, { recursive: true })
+    await writeFile(join(other, "notes.txt"), "keep me")
+    await writeFile(join(wt, "pnpm-workspace.yaml"), `virtualStoreDir: ${other}\n`)
+    expect(findWorktreeVirtualStore(wt)).toBeUndefined()
+  })
+
+  it("refuses a symlinked virtual store", async () => {
+    const { wt, vstores } = await setup(null)
+    const link = join(vstores, "linked", "feat")
+    await mkdir(join(vstores, "linked"), { recursive: true })
+    await symlink(join(vstores, "feat"), link)
+    await writeFile(join(wt, "pnpm-workspace.yaml"), `virtualStoreDir: ${link}\n`)
+    expect(findWorktreeVirtualStore(wt)).toBeUndefined()
+  })
+
+  it("pnpm-workspace.yaml wins over .npmrc, as in pnpm", async () => {
+    const { wt, vstores } = await setup("virtualStoreDir: {VS}/feat\n", "virtual-store-dir=/elsewhere/feat\n")
+    expect(findWorktreeVirtualStore(wt)).toBe(join(vstores, "feat"))
+  })
+
+  it("reads CRLF files", async () => {
+    const { wt, vstores } = await setup("packages:\r\n  - a\r\nvirtualStoreDir: {VS}/feat\r\n")
+    expect(findWorktreeVirtualStore(wt)).toBe(join(vstores, "feat"))
   })
 
   it("never targets an ancestor of the worktree or the filesystem root", async () => {
