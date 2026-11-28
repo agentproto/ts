@@ -113,6 +113,8 @@ export interface AdapterInfo {
    *  (`agentproto adapters outdated`) so local / workspace / non-global
    *  installs report their real version instead of "version unknown". */
   packageVersion?: string
+  /** Manifest-declared deprecation and its replacement harness. */
+  deprecated?: AgentCliHandle["deprecated"]
   /** One-line user-facing description. */
   description: string
   /** Wire protocol — informs prompt/multi-turn semantics. */
@@ -976,6 +978,7 @@ function toAdapterInfo(slug: string, resolved: ResolvedAdapter): AdapterInfo {
     name: typeof handle.name === "string" ? handle.name : slug,
     version: typeof handle.version === "string" ? handle.version : "?",
     ...(resolved.packageVersion ? { packageVersion: resolved.packageVersion } : {}),
+    ...(resolved.handle.deprecated ? { deprecated: resolved.handle.deprecated } : {}),
     description: typeof handle.description === "string" ? handle.description : "",
     protocol: typeof handle.protocol === "string" ? handle.protocol : "unknown",
     streaming: !!(handle.capabilities as { streaming?: boolean })?.streaming,
