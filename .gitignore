@@ -110,3 +110,4 @@ packages/vscode/*.vsix
 # Shared turbo filesystem build cache (AGENTS.md recommends pointing at one
 # dir across worktrees; never commit its artifacts)
 .turbo-shared-cache
+packages/collect/.test-stores
