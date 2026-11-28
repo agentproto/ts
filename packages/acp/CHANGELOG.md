@@ -1,5 +1,11 @@
 # @agentproto/acp
 
+## 0.16.1
+
+### Patch Changes
+
+- 325c582: fix(acp): surface the canonical MCP tool name (`mcp__<server>__<tool>`) from `_meta.claudeCode.toolName` instead of the bridge's "<server>: <tool>" display title, so chat UIs can route MCP App views for claude-code sessions. fix(mcp-app-host): emit `object-src 'none'` in the sandbox CSP as the MCP Apps spec requires.
+
 ## 0.16.0
 
 ### Minor Changes

@@ -1,5 +1,11 @@
 # @agentproto/sandbox
 
+## 1.0.4
+
+### Patch Changes
+
+- @agentproto/secrets@2.2.3
+
 ## 1.0.3
 
 ### Patch Changes

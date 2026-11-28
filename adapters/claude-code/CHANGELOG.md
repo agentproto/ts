@@ -1,5 +1,12 @@
 # @agentproto/adapter-claude-code
 
+## 2.9.3
+
+### Patch Changes
+
+- Updated dependencies [f4a1f64]
+  - @agentproto/harness@4.3.0
+
 ## 2.9.2
 
 ### Patch Changes

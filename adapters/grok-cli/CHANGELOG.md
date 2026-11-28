@@ -1,5 +1,12 @@
 # @agentproto/adapter-grok-cli
 
+## 0.2.34
+
+### Patch Changes
+
+- Updated dependencies [f4a1f64]
+  - @agentproto/harness@4.3.0
+
 ## 0.2.33
 
 ### Patch Changes

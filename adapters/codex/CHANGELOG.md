@@ -1,5 +1,12 @@
 # @agentproto/adapter-codex
 
+## 2.1.8
+
+### Patch Changes
+
+- Updated dependencies [f4a1f64]
+  - @agentproto/harness@4.3.0
+
 ## 2.1.7
 
 ### Patch Changes

@@ -1,5 +1,13 @@
 # @agentproto/adapter-opencode
 
+## 1.11.3
+
+### Patch Changes
+
+- Updated dependencies [f4a1f64]
+  - @agentproto/auth@2.1.0
+  - @agentproto/harness@4.3.0
+
 ## 1.11.2
 
 ### Patch Changes

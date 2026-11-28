@@ -1,5 +1,13 @@
 # @agentproto/adapter-claude-code-cloud
 
+## 0.3.10
+
+### Patch Changes
+
+- Updated dependencies [f4a1f64]
+  - @agentproto/harness@4.3.0
+  - @agentproto/adapter-claude-sdk@0.7.40
+
 ## 0.3.9
 
 ### Patch Changes
