@@ -41,7 +41,7 @@ browser@iphone.local  b2c3d4e5f607189c3e5d7f1a2b4c6d0a  client  browser   no    
 
 - `role` is `client` (paired via `pair accept`) or `host` (registered via
   `devices add`).
-- `kind` (`browser` | `cli` | `daemon`) is a best-effort guess from the
+- `kind` (`browser` | `cli` | `daemon` | `app`) is a best-effort guess from the
   device's self-reported name — pair/v2's handshake carries no dedicated
   client-kind field yet, but both shipped clients default that name to a
   recognisable shape (`browser@<host>` for the web pair page,
