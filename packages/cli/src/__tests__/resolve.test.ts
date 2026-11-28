@@ -806,5 +806,7 @@ describe("listInstalledAdapters — deprecation projection", () => {
     const adapters = await listInstalledAdapters()
     expect(handle.deprecated).toMatchObject({ replacedBy: "antigravity" })
     expect(adapters.find((adapter) => adapter.slug === "gemini")?.deprecated).toEqual(handle.deprecated)
+    const catalog = await listAdaptersWithCatalog(CATALOG)
+    expect(catalog.find((adapter) => adapter.slug === "gemini")?.deprecated).toEqual(handle.deprecated)
   })
 })

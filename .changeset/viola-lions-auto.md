@@ -1,5 +1,6 @@
 ---
 "@agentproto/cli": patch
+"@agentproto/runtime": patch
 ---
 
-Show manifest-declared harness deprecations in `agentproto adapters list` and display daemon warnings when starting a session. The Gemini CLI deprecation names Antigravity as its replacement.
+Show manifest-declared harness deprecations in adapter listings and when starting a session or running a harness directly. The Gemini CLI deprecation names Antigravity as its replacement.

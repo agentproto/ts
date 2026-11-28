@@ -1180,7 +1180,7 @@ export interface AgentCliWrappedHandle extends AdapterHandle {
 /** Extract the family descriptor from a wrapped handle (never includes secrets). */
 type AgentCliInfo = Pick<
   AdapterInfo,
-  "protocol" | "streaming" | "commands" | "models" | "modes" | "modelDetails" | "modelApply" | "routeSelection"
+  "protocol" | "streaming" | "commands" | "models" | "modes" | "modelDetails" | "modelApply" | "routeSelection" | "deprecated"
 > & { stale?: true; authRequired?: boolean; provider?: string }
 
 function toAgentCliInfo(h: AgentCliWrappedHandle): AgentCliInfo {
@@ -1192,6 +1192,7 @@ function toAgentCliInfo(h: AgentCliWrappedHandle): AgentCliInfo {
     modes: h.modes,
     modelDetails: h.modelDetails,
     modelApply: h.modelApply,
+    ...(h.originalHandle.deprecated ? { deprecated: h.originalHandle.deprecated } : {}),
     ...(h.stale ? { stale: true } : {}),
     ...(h.authRequired ? { authRequired: true } : {}),
     ...(typeof h.originalHandle.provider === "string" ? { provider: h.originalHandle.provider } : {}),
@@ -1401,6 +1402,7 @@ export async function listAdaptersWithCatalog(
       modes: e.info?.modes ?? [],
       modelDetails: e.info?.modelDetails ?? [],
       modelApply: e.info?.modelApply ?? "config",
+      ...(e.info?.deprecated ? { deprecated: e.info.deprecated } : {}),
       ...(e.info?.routeSelection ? { routeSelection: e.info.routeSelection } : {}),
       ...(e.info?.provider ? { provider: e.info.provider } : {}),
       status: stale ? ("unresolvable" as const) : e.status,
