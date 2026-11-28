@@ -140,6 +140,9 @@ export function memoryStore(options: { now?: () => string } = {}): CollectStore 
       return seen.get(key)
     },
     async seenAdd(key, itemId) {
+      for (const v of itemId === undefined ? [key] : [key, itemId]) {
+        if (v.includes("\n") || v.includes("\t")) throw new Error("a seen key or item id cannot contain a newline or a tab")
+      }
       if (!seen.has(key) || (seen.get(key) === undefined && itemId !== undefined)) seen.set(key, itemId)
     },
     async seenKeys() {
