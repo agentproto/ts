@@ -618,6 +618,126 @@ describe("recipe sampling", () => {
   })
 })
 
+describe("back-pressure, hard stop and lanes", () => {
+  const rows = (t: string, n = 1): Row[] => Array.from({ length: n }, (_, i) => ({ id: `${t}-${i}`, views: 1 }))
+
+  it("bounds the results held behind a slow head", async () => {
+    const tasks = Array.from({ length: 30 }, (_, i) => `t${String(i).padStart(2, "0")}`)
+    const pages: Pages = Object.fromEntries(tasks.map((t) => [t, rows(t)]))
+    const base = sampled(tasks)
+    let parsed = 0
+    let ended = 0
+    let maxHeld = 0
+    const connector = defineConnector({
+      ...base,
+      parse: (input) => {
+        parsed++
+        maxHeld = Math.max(maxHeld, parsed - ended)
+        return base.parse(input)
+      },
+    })
+    const store = memoryStore()
+    const report = await createCollector({ store, transports: { http: web(pages, "fake", { t00: 150 }) }, connectors: [connector] }).run(
+      { ...recipeOf(["fake"], 8), lookahead: 3 },
+      { onEvent: (e) => e.type === "task.end" && ended++ },
+    )
+    expect(report.connectors[0]).toMatchObject({ status: "ok", tasks: { done: 30 } })
+    expect(maxHeld).toBeGreaterThan(1)
+    expect(maxHeld).toBeLessThanOrEqual(3)
+    expect(await ids(store)).toHaveLength(30)
+  })
+
+  it("a challenge stops queued and late work of the connector: nothing written, nothing sampled, no follow-ups", async () => {
+    const store = memoryStore()
+    const http = web({ x1: rows("x1") }, "x", { x1: 80 })
+    const browser = fakeBrowser()
+    browser.respond.set("https://y.example.com/y1", { posts: rows("y1") as never, next: ["y1n"] })
+    browser.respond.set("https://y.example.com/y2", { posts: rows("y2") as never })
+    const y = sampled(["y1", "y2"], { id: "y", transports: ["browser"] })
+    const yc = defineConnector({
+      ...y,
+      fetch: async (task, transport, ctx) => {
+        const r = await y.fetch(task, transport, ctx)
+        if (task.id === "y2") r.raws[0]!.challenge = true
+        return r
+      },
+    })
+    const report = await createCollector({
+      store,
+      transports: { http, browser },
+      connectors: [sampled(["x1"], { id: "x" }), yc],
+    }).run(recipe({ bands: [{ min: 0, max: 9 }] }, ["x", "y"], 4))
+    const tasks = (await readAll(store.tasks(report.runId))).records
+    expect(tasks.find((t) => t.taskId === "y/y1")).toMatchObject({ status: "skipped", reason: "challenge" })
+    expect(tasks.find((t) => t.taskId === "y/y2")).toMatchObject({ status: "failed" })
+    expect(tasks.some((t) => t.taskId === "y/y1n")).toBe(false)
+    expect(await ids(store)).toEqual(["x:x1-0"])
+    expect((await lines(store, report.runId)).map((l) => l.candidate)).toEqual(["x:x1-0"])
+    expect(report.connectors.find((c) => c.connector === "y")).toMatchObject({ newItems: 0 })
+  })
+
+  it("a later browser task that succeeds while waiting behind a slow head does not block the head's fallback into the browser lane", async () => {
+    const store = memoryStore()
+    const http = web({ t1: rows("t1") }, "fake")
+    http.respond.set("https://fake.example.com/t1", async () => {
+      await new Promise((r) => setTimeout(r, 60))
+      return { status: 403, headers: {}, body: enc("no"), url: "https://fake.example.com/t1" }
+    })
+    const browser = fakeBrowser()
+    browser.respond.set("https://fake.example.com/t1", { posts: rows("t1") as never })
+    browser.respond.set("https://other.example.com/b1", { posts: rows("b1") as never })
+    browser.respond.set("https://other.example.com/b2", { posts: rows("b2") as never })
+    const report = await createCollector({
+      store,
+      transports: { http, browser },
+      connectors: [sampled(["t1"], { transports: ["http", "browser"] }), sampled(["b1", "b2"], { id: "other", transports: ["browser"] })],
+    }).run(recipe({ bands: [{ min: 0, max: 9 }] }, ["fake", "other"], 4))
+    expect(report.connectors.map((c) => [c.connector, c.tasks.done])).toEqual([["fake", 1], ["other", 2]])
+    expect(await ids(store)).toEqual(["fake:t1-0", "other:b1-0", "other:b2-0"])
+    // Committed in plan order: the head first, although the browser tasks fetched first.
+    expect((await lines(store, report.runId)).map((l) => l.candidate)).toEqual(["fake:t1-0", "other:b1-0", "other:b2-0"])
+  })
+
+  it("finds a challenge in any raw by cause, whatever its position", async () => {
+    const store = memoryStore()
+    const base = fakeConnector({ tasks: ["c1"] })
+    const connector = defineConnector({
+      ...base,
+      fetch: async () => ({
+        raws: [
+          { url: "https://fake.example.com/c1/1", ext: "html", bytes: enc("missing"), httpStatus: 404 },
+          { url: "https://fake.example.com/c1/2", ext: "html", bytes: enc("verify"), httpStatus: 200, challenge: true },
+        ],
+      }),
+    })
+    const report = await createCollector({ store, transports: { http: fakeHttp() }, connectors: [connector] }).run(recipeOf(["fake"], 1))
+    expect(report.connectors[0]).toMatchObject({ tasks: { failed: 1 }, failures: { challenge: 1 } })
+  })
+
+  it("a known owner wins over an earlier drop: no quota, still its observation", async () => {
+    const store2 = memoryStore()
+    const http = web({ l1: [{ id: "a", views: 1 }, { id: "x", views: 2 }], r1: [{ id: "x", views: 2 }], l2: [{ id: "x", views: 3 }] })
+    const r2 = await createCollector({ store: store2, transports: { http }, connectors: [sampled(["l1", "r1", "l2"], { kinds: { r1: "read" } })] }).run(
+      recipe({ bands: [{ min: 0, max: 9, quota: 1 }] }),
+    )
+    expect((await lines(store2, r2.runId)).map((l) => [l.candidate, l.decision, l.rule])).toEqual([
+      ["fake:a", "kept", undefined],
+      ["fake:x", "dropped", "band_quota"],
+    ])
+    expect(await ids(store2)).toEqual(["fake:a", "fake:x"])
+    const obs: number[] = []
+    for await (const o of store2.observations()) if (o.itemId === "fake:x") obs.push(o.metrics.views!)
+    expect(obs).toEqual([2, 3])
+  })
+
+  it("a known owner beats a dropped journal entry in the sampler", () => {
+    const s = createSampler({ bands: [{ min: 0, max: 9, quota: 0 }] }, "views", [{ candidate: "x", decision: "dropped", rule: "band_quota", band: 0 }])
+    const plan = s.plan("k", [cand("x", { views: 1 })], new Set(["x"]))
+    expect(plan.lines).toEqual([])
+    expect(plan.dropped.size).toBe(0)
+  })
+})
+
 const PINNED_SEED_7 = ["fake:r00", "fake:r02", "fake:r08", "fake:r10"]
 const PINNED_SEED_8 = ["fake:r04", "fake:r06", "fake:r09", "fake:r10"]
 

@@ -184,7 +184,9 @@ export function createSampler(config: SamplingConfig, primary: MetricName | unde
     for (const g of groups) {
       let earlier: SamplingDecision | undefined
       for (const m of g.members) earlier ??= decided.get(m.id) ?? (m.url ? decidedUrl.get(m.url) : undefined)
-      if (!earlier && g.members.some((m) => known.has(m.id))) continue
+      // An item that already exists always wins over an earlier drop: it is not sampled and uses no budget.
+      // One kept earlier stays in the ordering, so a replayed task keeps its positions.
+      if (g.members.some((m) => known.has(m.id)) && earlier?.decision !== "kept") continue
       const rep = representative(g)
       pool.push({ id: rep.id, g, rep, earlier })
     }

@@ -274,6 +274,8 @@ export const Recipe = z.object({
     })
     .optional(),
   workers: z.number().int().positive().default(8),
+  /** Most tasks fetched or held ahead of the ordered commit cursor. Default: 4 times the worker count. */
+  lookahead: z.number().int().positive().optional(),
   sinks: z.array(z.string()).optional(),
 })
 export type Recipe = z.infer<typeof Recipe>

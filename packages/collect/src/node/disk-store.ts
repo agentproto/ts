@@ -264,7 +264,13 @@ class DiskStore implements CollectStore {
       if (await hasTornTail(path)) await appendFile(path, "\n")
       this.tailChecked.add(path)
     }
-    await appendFile(path, `${text}\n`)
+    try {
+      await appendFile(path, `${text}\n`)
+    } catch (e) {
+      // A failed append may have left a torn tail: check it again before the next one through this handle.
+      this.tailChecked.delete(path)
+      throw e
+    }
   }
 
   private append(path: string, record: unknown): Promise<void> {

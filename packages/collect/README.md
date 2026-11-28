@@ -310,6 +310,16 @@ turn; a task in transport fallback keeps it. So the kept set does not depend on
 worker count, latency or which transport answered first: it is identical to a
 `workers: 1` run.
 
+Results held behind a slow task are bounded: a task is launched only while
+fewer than `lookahead` tasks are live (default `4 * workers`, set it in the
+recipe) and its slot is within `lookahead` positions of the commit cursor. The
+head of the order and a task in transport fallback always launch, so the window
+cannot stall a run. A connector stopped by a challenge commits nothing more:
+work of it that was waiting for its turn or arrives late writes and samples
+nothing, creates no follow-up task, and its task is recorded as skipped with
+reason `challenge`. A cancelled run or a failed store stops further commits; a
+task that was already the head when the run was cancelled still completes.
+
 **Which candidates are sampled.** An item that already exists in the store
 (same id or same canonical URL) is a known item: it is not sampled, uses no
 quota or cap, and gets its new observation as usual. Among the new ones, a

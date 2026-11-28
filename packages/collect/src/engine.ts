@@ -606,11 +606,20 @@ export function createCollector(options: CollectorOptions): Collector {
         w()
       }
     }
+    // Back-pressure: results held behind a slow head are bounded. A task is launched only
+    // while fewer than `lookahead` tasks are live (fetching or held) and its slot is within
+    // `lookahead` positions of the cursor. The head, and a task in fallback (already live),
+    // are always launchable, so progress never waits on the window.
+    const lookahead = recipe.lookahead ?? 4 * workers
+    const live = new Set<Entry>()
     const resolveSlot = (e: Entry) => {
       const i = slots.indexOf(e)
       if (i >= 0) slots.splice(i, 1)
+      live.delete(e)
       wakeHead()
+      pump()
     }
+    const launchable = (e: Entry) => live.has(e) || slots[0] === e || !slots.includes(e) || (live.size < lookahead && slots.indexOf(e) < lookahead)
     const registerSlot = (e: Entry) => insertSorted(slots, e)
     /** True once every earlier slot is resolved; false when the run stops first (the task stays pending). */
     async function awaitTurn(e: Entry): Promise<boolean> {
@@ -637,12 +646,18 @@ export function createCollector(options: CollectorOptions): Collector {
     }
     const pump = () => {
       if (!stopping()) {
-        while (poolActive < workers && poolQueue.length) launch(poolQueue.shift()!, "pool")
-        if (browserActive === 0 && browserQueue.length) launch(browserQueue.shift()!, "browser")
+        while (poolActive < workers && poolQueue.length && launchable(poolQueue[0]!)) launch(poolQueue.shift()!, "pool")
+        if (browserActive === 0 && browserQueue.length && launchable(browserQueue[0]!)) launch(browserQueue.shift()!, "browser")
+        // Nothing running and nothing launchable: never stall on the window.
+        if (poolActive === 0 && browserActive === 0 && commitsActive === 0) {
+          const first = [poolQueue[0], browserQueue[0]].filter((e): e is Entry => e !== undefined).sort((a, b) => compareOrder(a.order, b.order))[0]
+          if (first) launch((first === poolQueue[0] ? poolQueue : browserQueue).shift()!, first === poolQueue[0] ? "pool" : "browser")
+        }
       }
       check()
     }
     const launch = (entry: Entry, lane: "pool" | "browser") => {
+      live.add(entry)
       if (lane === "pool") poolActive++
       else browserActive++
       const p: Promise<void> = attempt(entry)
@@ -943,7 +958,7 @@ export function createCollector(options: CollectorOptions): Collector {
         failedRaws = result.raws
         // A challenge in any raw wins over the other failures.
         const found = result.raws.map((r) => classifyRaw(r, name === "browser")).filter((f): f is Failure => f !== undefined)
-        failure = found.find((f) => f.challenge) ?? found[0]
+        failure = found.find((f) => f.challenge) ?? found.find((f) => f.cause === "challenge") ?? found[0]
         if (!failure && result.raws.length === 0) {
           failure = { fallback: true, challenge: false, cause: "empty", message: "no content" }
         }
@@ -1008,8 +1023,8 @@ export function createCollector(options: CollectorOptions): Collector {
       // Success: keep the raws, parse and validate every one. The commit waits for its turn.
       const prepared: Prepared[] = []
       const tasks: Task[] = []
-      const parseError = await write(async (): Promise<string | undefined> => {
-        const stored: Array<{ raw: FetchedRaw; ref: string; hash: string }> = []
+      const stored = await write(async () => {
+        const out: Array<{ raw: FetchedRaw; ref: string; hash: string }> = []
         for (const raw of result!.raws) {
           const put = await store.putRaw({
             connector: connector.id,
@@ -1021,23 +1036,25 @@ export function createCollector(options: CollectorOptions): Collector {
             transport: name,
             runId,
           })
-          stored.push({ raw, ref: put.ref, hash: put.hash })
+          out.push({ raw, ref: put.ref, hash: put.hash })
         }
-        try {
-          for (const { raw, ref, hash } of stored) {
-            const parsed = await connector.parse({
-              connector: connector.id,
-              task: entry.task,
-              raw: { ref, url: raw.url, ext: raw.ext, bytes: raw.bytes, httpStatus: raw.httpStatus, fetchedAt, transport: name },
-            })
-            prepared.push(await prepare(entry, parsed, ref, hash, fetchedAt, name))
-          }
-          for (const t of result!.tasks ?? []) tasks.push(CollectTask.parse(t))
-        } catch (e) {
-          return e instanceof Error ? e.message : String(e)
-        }
-        return undefined
+        return out
       })
+      // Parsing and validation run outside the write queue: only sampling, dedup and writes are serialised.
+      let parseError: string | undefined
+      try {
+        for (const { raw, ref, hash } of stored) {
+          const parsed = await connector.parse({
+            connector: connector.id,
+            task: entry.task,
+            raw: { ref, url: raw.url, ext: raw.ext, bytes: raw.bytes, httpStatus: raw.httpStatus, fetchedAt, transport: name },
+          })
+          prepared.push(await prepare(entry, parsed, ref, hash, fetchedAt, name))
+        }
+        for (const t of result!.tasks ?? []) tasks.push(CollectTask.parse(t))
+      } catch (e) {
+        parseError = e instanceof Error ? e.message : String(e)
+      }
       if (parseError !== undefined) {
         return finishFailed(entry, { fallback: false, challenge: false, cause: "parse", message: parseError })
       }
@@ -1063,10 +1080,23 @@ export function createCollector(options: CollectorOptions): Collector {
     async function commit(entry: Entry, prepared: Prepared[], tasks: Task[], name: TransportName): Promise<void> {
       const connector = entry.connector
       const state = states.get(connector.id)!
+      const wasHead = slots[0] === entry || !slots.includes(entry)
       if (!(await awaitTurn(entry))) return // stays pending
       const counters: TaskCounters = { items: 0, newItems: 0, duplicates: 0, observations: 0, metricValues: 0 }
       const followUps: Entry[] = []
+      const outcome = { v: "done" as "done" | "stopped" | "bail" }
       await write(async () => {
+        // State may have changed while this write waited in the queue. A failed store or a cancelled
+        // run writes nothing more (a task that was already the head when the run was cancelled still
+        // completes); a connector stopped by a challenge samples, writes and queues nothing.
+        if (fatal !== undefined || (aborted() && !wasHead)) {
+          outcome.v = "bail"
+          return
+        }
+        if (state.stopped) {
+          outcome.v = "stopped"
+          return
+        }
         await ingest(await sample(entry, prepared), counters)
         tasks.forEach((task, j) => {
           const k = key(connector.id, task.id)
@@ -1098,6 +1128,8 @@ export function createCollector(options: CollectorOptions): Collector {
           updatedAt: iso(),
         })
       })
+      if (outcome.v === "bail") return // stays pending
+      if (outcome.v === "stopped") return skip(entry, "challenge", "challenge")
       resolveSlot(entry)
       for (const f of followUps) enqueue(f)
       await emit("task.end", {
