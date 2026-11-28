@@ -113,6 +113,8 @@ export interface AdapterInfo {
    *  (`agentproto adapters outdated`) so local / workspace / non-global
    *  installs report their real version instead of "version unknown". */
   packageVersion?: string
+  /** Manifest-declared deprecation and its replacement harness. */
+  deprecated?: AgentCliHandle["deprecated"]
   /** One-line user-facing description. */
   description: string
   /** Wire protocol — informs prompt/multi-turn semantics. */
@@ -976,6 +978,7 @@ function toAdapterInfo(slug: string, resolved: ResolvedAdapter): AdapterInfo {
     name: typeof handle.name === "string" ? handle.name : slug,
     version: typeof handle.version === "string" ? handle.version : "?",
     ...(resolved.packageVersion ? { packageVersion: resolved.packageVersion } : {}),
+    ...(resolved.handle.deprecated ? { deprecated: resolved.handle.deprecated } : {}),
     description: typeof handle.description === "string" ? handle.description : "",
     protocol: typeof handle.protocol === "string" ? handle.protocol : "unknown",
     streaming: !!(handle.capabilities as { streaming?: boolean })?.streaming,
@@ -1177,7 +1180,7 @@ export interface AgentCliWrappedHandle extends AdapterHandle {
 /** Extract the family descriptor from a wrapped handle (never includes secrets). */
 type AgentCliInfo = Pick<
   AdapterInfo,
-  "protocol" | "streaming" | "commands" | "models" | "modes" | "modelDetails" | "modelApply" | "routeSelection"
+  "protocol" | "streaming" | "commands" | "models" | "modes" | "modelDetails" | "modelApply" | "routeSelection" | "deprecated"
 > & { stale?: true; authRequired?: boolean; provider?: string }
 
 function toAgentCliInfo(h: AgentCliWrappedHandle): AgentCliInfo {
@@ -1189,6 +1192,7 @@ function toAgentCliInfo(h: AgentCliWrappedHandle): AgentCliInfo {
     modes: h.modes,
     modelDetails: h.modelDetails,
     modelApply: h.modelApply,
+    ...(h.originalHandle.deprecated ? { deprecated: h.originalHandle.deprecated } : {}),
     ...(h.stale ? { stale: true } : {}),
     ...(h.authRequired ? { authRequired: true } : {}),
     ...(typeof h.originalHandle.provider === "string" ? { provider: h.originalHandle.provider } : {}),
@@ -1398,6 +1402,7 @@ export async function listAdaptersWithCatalog(
       modes: e.info?.modes ?? [],
       modelDetails: e.info?.modelDetails ?? [],
       modelApply: e.info?.modelApply ?? "config",
+      ...(e.info?.deprecated ? { deprecated: e.info.deprecated } : {}),
       ...(e.info?.routeSelection ? { routeSelection: e.info.routeSelection } : {}),
       ...(e.info?.provider ? { provider: e.info.provider } : {}),
       status: stale ? ("unresolvable" as const) : e.status,

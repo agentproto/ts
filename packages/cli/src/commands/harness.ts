@@ -66,6 +66,8 @@ The pinned-npx rule: an adapter whose bin_args pins the harness
 place — the pin lives in the adapter, so outdated reports it and the fix
 is bumping the pin via a PR to this repo.
 
+Use \`agentproto adapters list\` to list installed harness adapters.
+
 Examples:
   agentproto harness outdated --json
   agentproto harness check opencode

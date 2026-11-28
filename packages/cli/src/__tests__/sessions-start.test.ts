@@ -83,6 +83,25 @@ describe("agentproto sessions start — orchestrator / mcpServers flags", () => 
     vi.restoreAllMocks()
   })
 
+  it.each([false, true])("surfaces spawn warnings (JSON: %s)", async (json) => {
+    const warning = 'harness "gemini" is deprecated; use "antigravity" instead.'
+    httpPostJson.mockResolvedValue({
+      id: "sess_001",
+      kind: "agent",
+      status: "running",
+      command: "gemini",
+      warnings: [warning],
+    })
+
+    expect(await runSessions(["start", "gemini", ...(json ? ["--json"] : [])])).toBe(0)
+    if (json) {
+      expect(JSON.parse(stdoutChunks.join(""))).toMatchObject({ warnings: [warning] })
+      expect(stderrChunks.join("")).toBe("")
+    } else {
+      expect(stderrChunks.join("")).toContain(warning)
+    }
+  })
+
   it("USAGE documents the new flags", async () => {
     const code = await runSessions(["--help"])
     expect(code).toBe(0)

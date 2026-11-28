@@ -799,3 +799,14 @@ describe("resolveAdapter / listInstalledAdapters — packageVersion projection",
     expect(agy?.packageVersion).toBe(pkgJson.version)
   })
 })
+
+describe("listInstalledAdapters — deprecation projection", () => {
+  it("retains the deprecation declared by the Gemini harness", { timeout: 15_000 }, async () => {
+    const { handle } = await resolveAdapter("gemini")
+    const adapters = await listInstalledAdapters()
+    expect(handle.deprecated).toMatchObject({ replacedBy: "antigravity" })
+    expect(adapters.find((adapter) => adapter.slug === "gemini")?.deprecated).toEqual(handle.deprecated)
+    const catalog = await listAdaptersWithCatalog(CATALOG)
+    expect(catalog.find((adapter) => adapter.slug === "gemini")?.deprecated).toEqual(handle.deprecated)
+  })
+})

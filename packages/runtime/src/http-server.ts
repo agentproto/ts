@@ -58,6 +58,7 @@ import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises"
 import { basename, dirname, extname, isAbsolute, join, resolve as resolvePath, sep } from "node:path"
 import type { AcpMcpServer, AgentPromptAnswers } from "@agentproto/acp"
 import type { SandboxMode } from "@agentproto/command-sandbox"
+import type { AgentCliHandle } from "@agentproto/harness"
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js"
 import {
@@ -932,7 +933,7 @@ export type AgentAdapterResolver = (slug: string) => Promise<{
    */
   deferredToolDiscovery?: boolean
   /** Manifest-declared `deprecated`: a spawn still works but warns. */
-  deprecated?: { replacedBy: string; message?: string }
+  deprecated?: AgentCliHandle["deprecated"]
   /**
    * Manifest-declared `capabilities.selfCommands` — the allow-list of slash
    * commands a session may run on itself via `session_command_self`.
@@ -980,6 +981,8 @@ export interface AdapterListEntry {
   protocol: string
   streaming: boolean
   packageName: string
+  /** Manifest-declared deprecation and its replacement harness. */
+  deprecated?: AgentCliHandle["deprecated"]
   /** Declared operation modes with their honest support status, so a
    *  client can see e.g. hermes' `lean` mode is a measured no-op instead
    *  of being silently accepted. Empty when the adapter declares none. */

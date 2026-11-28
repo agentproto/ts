@@ -338,3 +338,34 @@ describe("agentproto adapters list — consistent with discovered & legacy adapt
     ])
   })
 })
+
+describe("agentproto adapters list — harness deprecation", () => {
+  it.each([false, true])("reports deprecation for discovered harnesses (configured: %s)", async (configured) => {
+    const packageName = "@agentproto/adapter-gemini"
+    const deprecated = { replacedBy: "antigravity", message: "Gemini models are still available." }
+    writeConfig({ adapters: configured ? [packageName] : [] })
+    listInstalledAdaptersMock.mockResolvedValue([
+      { slug: "gemini", packageName, protocol: "acp", version: "0.3.8", deprecated },
+    ])
+
+    expect(await runAdapters(["list"])).toBe(0)
+    expect(out.join("")).toContain("deprecated; use \"antigravity\" instead. Gemini models are still available.")
+    out.length = 0
+    expect(await runAdapters(["list", "--json"])).toBe(0)
+    expect(JSON.parse(out.join(""))).toMatchObject([{ slug: "gemini", deprecated }])
+  })
+
+  it("reports deprecation when the harness is resolved by slug", async () => {
+    const deprecated = { replacedBy: "antigravity" }
+    writeConfig({ adapters: ["gemini"] })
+    const adapter = fakeAntigravityResolved()
+    resolveAdapterMock.mockResolvedValue({
+      ...adapter,
+      slug: "gemini",
+      handle: { ...adapter.handle, deprecated },
+    })
+
+    expect(await runAdapters(["list", "--json"])).toBe(0)
+    expect(JSON.parse(out.join(""))).toMatchObject([{ slug: "gemini", deprecated }])
+  })
+})

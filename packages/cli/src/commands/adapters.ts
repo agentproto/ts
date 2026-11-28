@@ -30,6 +30,7 @@ import {
   readAdapterManifest,
   readAdapterPackageInfo,
 } from "../registry/manifest-loader.js"
+import type { AdapterInfo } from "../registry/resolve.js"
 import type {
   AdapterEntry,
   AdapterManifest,
@@ -140,6 +141,7 @@ interface AdapterListEntry {
   version?: string
   protocol?: string
   source?: string
+  deprecated?: AdapterInfo["deprecated"]
   enabled: boolean
   installed: boolean
   error?: string
@@ -214,6 +216,7 @@ async function runList(args: readonly string[]): Promise<number> {
         slug: found.slug,
         version: found.packageVersion ?? found.version,
         protocol: found.protocol,
+        ...(found.deprecated ? { deprecated: found.deprecated } : {}),
         enabled: true,
         installed: true,
       })
@@ -239,6 +242,7 @@ async function runList(args: readonly string[]): Promise<number> {
           ...(version ? { version } : {}),
           protocol,
           source: resolved.source,
+          ...(resolved.handle.deprecated ? { deprecated: resolved.handle.deprecated } : {}),
           enabled: true,
           installed: true,
         })
@@ -282,6 +286,7 @@ async function runList(args: readonly string[]): Promise<number> {
       slug: info.slug,
       version: info.packageVersion ?? info.version,
       protocol: info.protocol,
+      ...(info.deprecated ? { deprecated: info.deprecated } : {}),
       enabled: false,
       installed: true,
     })
@@ -326,6 +331,12 @@ async function runList(args: readonly string[]): Promise<number> {
       process.stdout.write(
         `    agent-cli: ${e.slug}${meta ? ` (${meta})` : ""}${scopeNote}\n`
       )
+      if (e.deprecated) {
+        const { replacedBy, message } = e.deprecated
+        process.stdout.write(
+          `    deprecated; use "${replacedBy}" instead.${message ? ` ${message}` : ""}\n`,
+        )
+      }
       continue
     }
     if (e.kind === "missing") {

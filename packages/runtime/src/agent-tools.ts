@@ -2446,6 +2446,7 @@ export function registerAgentTools(
     // several SHORT sentences — still tiny next to the model array, and it
     // is what installable rows display as their description.
     ...(a.hint !== undefined ? { hint: a.hint } : {}),
+    ...(a.deprecated ? { deprecated: a.deprecated } : {}),
     // Modes with their honest support status (id + status only; the
     // per-mode `description`/`spawn internals` stay `full: true` material).
     modes: a.modes.map(m => ({
@@ -2540,7 +2541,7 @@ export function registerAgentTools(
       "`agent_start` when the model doesn't already know what's available. " +
       "COMPACT BY DEFAULT (and sized to fit the MCP result budget): each " +
       "entry carries only `slug`, `name`, `version`, `protocol`, `installed`, " +
-      "`status`, `hint`, `modes`, `modelCount` — pass `full: true` " +
+      "`status`, `hint`, `deprecated`, `modes`, `modelCount` — pass `full: true` " +
       "(or `compact: false`) for the full " +
       "manifest projection (model ids/details, commands/modes — hundreds of " +
       "KB; page through it with `limit`/`cursor`). Pass `adapter` to scope " +
@@ -2559,7 +2560,7 @@ export function registerAgentTools(
       "`agent_start` when the model doesn't already know what's available. " +
       "COMPACT BY DEFAULT (and sized to fit the MCP result budget): each " +
       "entry carries only `slug`, `name`, `version`, `protocol`, `installed`, " +
-      "`status`, `hint`, `modes`, `modelCount` — pass `full: true` " +
+      "`status`, `hint`, `deprecated`, `modes`, `modelCount` — pass `full: true` " +
       "(or `compact: false`) for the full " +
       "manifest projection (model ids/details, commands/modes — hundreds of " +
       "KB; page through it with `limit`/`cursor`). Rows come under " +

@@ -146,6 +146,20 @@ describe("sandbox spawn — posture forwarding", () => {
     expect(buildSessionCapabilities(desc, 0).postureEnforcement).toBe("spawn-config")
   })
 
+  it("forwards harness deprecation warnings from the box's agent_start", async () => {
+    const warning = 'harness "gemini" is deprecated; use "antigravity" instead.'
+    const boxWarning = "agent_start: box-local setup warning"
+    startMock.mockResolvedValue({ id: "remote_sess_1", warnings: [warning, boxWarning] })
+    const result = await spawnAgentSession(makeDeps(registry), {
+      adapter: "gemini",
+      workspaceSlug: "host-repo",
+      sandbox: "device:work-mac",
+    })
+
+    expect(result).toMatchObject({ ok: true, warnings: expect.arrayContaining([warning]) })
+    if (result.ok) expect(result.warnings).not.toContain(boxWarning)
+  })
+
   it("stays advisory when the box reports nothing (older box daemon)", async () => {
     const result = await spawnAgentSession(makeDeps(registry), {
       adapter: "opencode",

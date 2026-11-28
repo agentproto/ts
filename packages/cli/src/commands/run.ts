@@ -152,6 +152,13 @@ export async function runRun(args: readonly string[]): Promise<number> {
   }
 
   const adapter = await resolveAdapter(slug)
+  if (adapter.handle.deprecated) {
+    const { replacedBy, message } = adapter.handle.deprecated
+    process.stderr.write(
+      `agentproto run: warning: harness "${slug}" is deprecated; use "${replacedBy}" instead.` +
+        (message ? ` ${message}\n` : "\n"),
+    )
+  }
   const runtime = createAgentCliRuntime(adapter.handle)
 
   // Mirror serve.ts / agent_start: `model` and `effort` are manifest-declared

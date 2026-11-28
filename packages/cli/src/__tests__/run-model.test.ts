@@ -22,7 +22,13 @@ vi.mock("@agentproto/harness", () => ({
 }))
 
 vi.mock("../registry/resolve.js", () => ({
-  resolveAdapter: vi.fn(async () => ({ handle: { id: "fake", bin: "fake" } })),
+  resolveAdapter: vi.fn(async (slug: string) => ({
+    handle: {
+      id: slug,
+      bin: "fake",
+      ...(slug === "gemini" ? { deprecated: { replacedBy: "antigravity" } } : {}),
+    },
+  })),
 }))
 
 // No piped stdin — force the `--prompt` path.
@@ -59,6 +65,19 @@ describe("agentproto run — --model / --effort", () => {
   beforeEach(() => {
     startSpy.mockReset()
     startSpy.mockResolvedValue(fakeSession())
+  })
+
+  it("warns before launching a deprecated harness", async () => {
+    const stderr = vi.spyOn(process.stderr, "write").mockReturnValue(true)
+    try {
+      expect(await runRun(["gemini", "--prompt", "hi"])).toBe(0)
+      expect(stderr).toHaveBeenCalledWith(
+        'agentproto run: warning: harness "gemini" is deprecated; use "antigravity" instead.\n',
+      )
+      expect(startSpy).toHaveBeenCalledOnce()
+    } finally {
+      stderr.mockRestore()
+    }
   })
 
   it("threads --model and --effort through as config.options", async () => {

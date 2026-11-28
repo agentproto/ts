@@ -1386,9 +1386,10 @@ async function runStart(args: readonly string[]): Promise<number> {
   // Source label: this spawn came from the agentproto CLI (#575).
   body.origin = "cli"
 
-  let desc: SessionDescriptor
+  type StartResponse = SessionDescriptor & { warnings?: string[] }
+  let desc: StartResponse
   try {
-    desc = await httpPostJson<SessionDescriptor>(
+    desc = await httpPostJson<StartResponse>(
       `${endpoint.url}/sessions/agent`,
       body,
       endpoint.token,
@@ -1408,6 +1409,9 @@ async function runStart(args: readonly string[]): Promise<number> {
   if (values.json) {
     process.stdout.write(JSON.stringify(desc, null, 2) + "\n")
   } else {
+    for (const warning of desc.warnings ?? []) {
+      process.stderr.write(`agentproto sessions start: warning: ${warning}\n`)
+    }
     process.stdout.write(
       `agentproto sessions start: spawned ${desc.kind} ${desc.id}` +
         ` (${desc.status}) — ${desc.command}` +

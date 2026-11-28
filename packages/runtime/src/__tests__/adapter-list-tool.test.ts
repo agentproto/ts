@@ -75,6 +75,17 @@ describe("adapter_list", () => {
     await h.close()
   })
 
+  it("includes the manifest deprecation in compact listings", async () => {
+    const deprecated = { replacedBy: "antigravity" }
+    const h = await harness(async () => [{ ...FULL_ADAPTER, slug: "gemini", deprecated }])
+    try {
+      const result = await h.client.callTool({ name: "adapter_list", arguments: {} })
+      expect(parseAdapters(result)).toMatchObject([{ slug: "gemini", deprecated }])
+    } finally {
+      await h.close()
+    }
+  })
+
   it("compact `installed` mirrors the lister's status: supported = not installed, available/unresolvable/ready/absent = installed", async () => {
     const h = await harness(async () => [
       { ...FULL_ADAPTER, slug: "ready-ad", status: "ready" as const },
