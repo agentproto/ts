@@ -59,6 +59,17 @@ export interface DaemonConfig {
    *  dropped with a warning at boot. A bare string is read as a
    *  comma-separated list. */
   frameAncestors?: string[] | string
+  /** Dedicated sandbox origin for MCP App views (MCP Apps spec: view and
+   *  host on different origins). `mode`: `subdomain` (default,
+   *  `<token>.sandbox.localhost`), `port` (second listener on `port`, for
+   *  browsers that do not resolve `*.localhost`) or `off` (opaque-origin
+   *  srcdoc fallback). `publicOrigin`: one fixed public hostname (e.g. a
+   *  tunnel hostname) that also serves views. */
+  mcpAppSandbox?: {
+    mode?: "subdomain" | "port" | "off"
+    port?: number
+    publicOrigin?: string
+  }
   /** When true, the daemon does NOT auto-trust localhost-on-any-port.
    *  Only origins explicitly listed in `allowedOrigins` are allowed.
    *  Pair with a curated list (e.g. `["http://localhost:3000"]`) for

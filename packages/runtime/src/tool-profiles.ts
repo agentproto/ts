@@ -270,6 +270,8 @@ export const PROFILE_TOOLS: Record<Exclude<ToolProfileName, "full">, readonly st
  * it belongs.
  */
 export const FULL_ONLY_TOOLS: readonly string[] = [
+  "device_offer",
+  "device_pair_pending",
   "activities_list",
   "adapter_list",
   "adapter_models",

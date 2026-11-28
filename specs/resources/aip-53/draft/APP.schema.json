@@ -135,6 +135,17 @@
         }
       ]
     },
+    "access": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "remote": {
+          "type": "boolean",
+          "description": "false: never listed to, nor callable from, a paired device."
+        }
+      },
+      "description": "Who may open the app from another device."
+    },
     "ui": {
       "type": "object",
       "required": [
@@ -181,6 +192,63 @@
               "type": "array",
               "items": {
                 "type": "string"
+              }
+            }
+          }
+        },
+        "install": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "How the UI installs as a web app (see \"Installable UI\"). Refines the manifest the host derives; every field is optional.",
+          "properties": {
+            "shortName": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 12
+            },
+            "themeColor": {
+              "type": "string",
+              "pattern": "^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$"
+            },
+            "backgroundColor": {
+              "type": "string",
+              "pattern": "^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$"
+            },
+            "display": {
+              "enum": [
+                "standalone",
+                "minimal-ui",
+                "browser"
+              ]
+            },
+            "icons": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 8,
+              "items": {
+                "type": "object",
+                "required": [
+                  "path"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "pattern": "^(?!/)(?!.*(^|/)\\.\\.(/|$)).+\\.(png|svg|webp)$",
+                    "description": "Relative to the app dir, no `..` segment."
+                  },
+                  "sizes": {
+                    "type": "string",
+                    "pattern": "^(any|[0-9]+x[0-9]+( [0-9]+x[0-9]+)*)$"
+                  },
+                  "purpose": {
+                    "enum": [
+                      "any",
+                      "maskable",
+                      "monochrome"
+                    ]
+                  }
+                }
               }
             }
           }

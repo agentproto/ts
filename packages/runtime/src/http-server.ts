@@ -50,6 +50,7 @@ import {
   type TaskProjector,
 } from "./mcp-modern/index.js"
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
+import { createMcpAppSandbox, parseRegistration, type McpAppSandboxOptions } from "./mcp-app-sandbox.js"
 import { homedir } from "node:os"
 import { Readable, type Duplex } from "node:stream"
 import type { ReadableStream as NodeWebReadableStream } from "node:stream/web"
@@ -208,6 +209,13 @@ import type { PairingRegistry } from "./pairing-registry.js"
 import type { HostRegistry, ForwardHttpResponse } from "./host-registry.js"
 import type { JoinTokenRegistry } from "./join-token-registry.js"
 import { createDeviceRegistry, promptDeviceSession, type DevicePromptSessionsLike } from "./device-registry.js"
+import { getDeviceAccessStore, extractDeviceToken } from "./device-access.js"
+import {
+  deviceMaySessionRead,
+  deviceRoute,
+  deviceToolCallAuth,
+  handleDeviceRoute,
+} from "./device-access-http.js"
 import { createReconnectLogGate } from "./reconnect-log-gate.js"
 import type { WorkflowRunner, WorkflowStage } from "./workflow-runner.js"
 import type { AppRegistry } from "./app-registry.js"
@@ -217,6 +225,7 @@ import {
   appLinkSessionReadAuth,
   appLinkToolCallAuth,
   appLinkTunnelBypass,
+  SESSION_READ_RE,
   isSameOriginRequest,
   logAppLinkAccess,
 } from "./app-link-gate.js"
@@ -1150,6 +1159,10 @@ export function bearerFromHeader(header: string | undefined): string | undefined
 export type AuthSource = AuthOptions | (() => AuthOptions)
 
 export interface RuntimeHttpServerOptions {
+  /** Dedicated sandbox origin for MCP App views — see `mcp-app-sandbox.ts`.
+   *  Default: `{ mode: "subdomain" }`. `{ mode: "off" }` disables it (hosts
+   *  fall back to the opaque-origin srcdoc). */
+  mcpAppSandbox?: McpAppSandboxOptions
   /** JSONL log of `POST /host/processes/:pid/stop` attempts. Default
    *  `~/.agentproto/host-stop-process.log` (tests point it at a temp file). */
   hostStopProcessLogPath?: string
@@ -1615,6 +1628,8 @@ export interface RuntimeHttpServerOptions {
    *  `approvalsTelegramBotSecret`). HTTP callers are OPERATOR context,
    *  same as `/tasks` and `/policies`. Without it the routes 404. */
   approvals?: import("./approvals/engine.js").ApprovalsEngine
+  /** Where `/.well-known/assetlinks.json` is read from (default `~/.agentproto/assetlinks.json`). */
+  assetLinksPath?: string
   /** Origins allowed to decide through the `web_click` channel
    *  (`approvals.webOrigins` in config). Empty/absent ⇒ the channel is off
    *  — the decision route always 403s regardless of token. Only read when
@@ -1837,6 +1852,10 @@ export async function startHttpServer(
   opts: RuntimeHttpServerOptions,
 ): Promise<RuntimeHttpServerHandle> {
   const startedAt = opts.meta.startedAt ?? Date.now()
+  const mcpSandbox = createMcpAppSandbox(opts.mcpAppSandbox, {
+    port: opts.port,
+    ...(opts.bind ? { bind: opts.bind } : {}),
+  })
   const authSource: AuthSource = opts.auth ?? { mode: "none" }
   const readAuth = (): AuthOptions =>
     typeof authSource === "function" ? authSource() : authSource
@@ -2009,6 +2028,16 @@ export async function startHttpServer(
     if (/^\/inbound\/[^/]+$/.test(path)) return true
     if (isAppUiShellRequest(method, path)) return true
     if (method === "POST" && /^\/apps\/(.+)\/link-auth$/.test(path)) return true
+    // Device pairing (device-access-http.ts): the pairing routes authenticate
+    // themselves (an offer plus a human confirmation, or a device token).
+    if (deviceRoute(method, path) !== undefined) return true
+    // A device token reaches the tool-call route of an app (the route decides
+    // grant, revocation and origin and answers 401/403 itself), and the session
+    // reads when its grant says so.
+    if (extractDeviceToken(req) !== undefined) {
+      if (method === "POST" && /^\/apps\/(.+)\/tool-call$/.test(path)) return true
+      if (method === "GET" && SESSION_READ_RE.test(path) && deviceMaySessionRead(req)) return true
+    }
     // PARENT RELAY: the route authenticates itself with the per-session
     // relay token (short-lived, single-session-scoped, minted by this
     // daemon), exactly like `/inbound/:slug` authenticates with its own
@@ -3747,6 +3776,27 @@ export async function startHttpServer(
           })
         }
 
+        // MCP App sandbox origin (R1/R2): a request addressed to a sandbox
+        // host is served by the sandbox handler alone (document-only, no CORS)
+        // and never reaches a daemon route; a request to the daemon that
+        // CARRIES a sandbox origin (Origin/Referer) is refused, before CORS
+        // and before every allowlist, so no allowlist entry can re-admit it.
+        const sandboxKind = mcpSandbox.classifyHost(req.headers.host)
+        if (sandboxKind) {
+          mcpSandbox.handle(req, res, sandboxKind)
+          return
+        }
+        if (mcpSandbox.isSandboxRequest(req)) {
+          res.writeHead(403, { "content-type": "application/json", "cache-control": "no-store" })
+          res.end(
+            JSON.stringify({
+              error: "forbidden_sandbox_origin",
+              message: "MCP App sandbox origins are never trusted by the daemon.",
+            }),
+          )
+          return
+        }
+
         applyCors(req, res)
         // The events origin is not a browser surface: its OPTIONS is routed on (405, Allow: POST), not answered by CORS.
         if (req.method === "OPTIONS" && !(opts.eventsMcp && path.startsWith("/mcp/events/"))) {
@@ -3777,6 +3827,15 @@ export async function startHttpServer(
         // for the bearer once a request has crossed the network boundary.
         if (!tunnelBearerAllowed(req, path, req.method ?? "GET")) {
           rejectTunnelUnauthorized(res)
+          return
+        }
+
+        if (deviceRoute(req.method ?? "GET", path) !== undefined) {
+          await handleDeviceRoute(req, res, req.method ?? "GET", path, {
+            ...(opts.approvals ? { approvals: opts.approvals } : {}),
+            ...(opts.appRegistry ? { appRegistry: opts.appRegistry } : {}),
+            ...(opts.assetLinksPath ? { assetLinksPath: opts.assetLinksPath } : {}),
+          })
           return
         }
 
@@ -3852,6 +3911,58 @@ export async function startHttpServer(
         }
         if (path === "/heartbeat/tick" && req.method === "POST") {
           await handleHeartbeatTick(req, res)
+          return
+        }
+
+        if (path === "/mcp-app-sandbox/views" && req.method === "POST") {
+          if (!mcpSandbox.enabled) {
+            res.writeHead(501, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: "sandbox_disabled" }))
+            return
+          }
+          const gate = checkSessionsToken(req)
+          if (gate !== "ok") {
+            rejectUnauthorizedSession(req, res, gate)
+            return
+          }
+          // A cross-origin page can send a `text/plain` POST without a
+          // preflight (no-cors "simple" request); requiring JSON forces the
+          // preflight, hence the CORS/Origin allowlist, before anything is stored.
+          if (!/^application\/json(?:\s*;|$)/i.test(String(req.headers["content-type"] ?? ""))) {
+            res.writeHead(415, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: "unsupported_media_type" }))
+            return
+          }
+          let raw: unknown
+          try {
+            // JSON-escaping can expand HTML up to 6x (\u00XX), plus the CSP arrays
+            // parseRegistration accepts (4 x 100 x 512 chars, escaped the same way).
+            raw = await readBoundedJson(req, mcpSandbox.maxHtmlBytes * 6 + 4 * 100 * 512 * 6 + 4096)
+          } catch {
+            res.writeHead(413, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: "body_too_large" }))
+            return
+          }
+          const parsed = parseRegistration(raw, mcpSandbox.maxHtmlBytes)
+          if (!parsed.ok) {
+            res.writeHead(400, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: parsed.error }))
+            return
+          }
+          const originHeader = req.headers.origin
+          const view = mcpSandbox.register({
+            html: parsed.html,
+            ...(parsed.csp ? { csp: parsed.csp } : {}),
+            ...(typeof originHeader === "string" ? { ancestor: originHeader } : {}),
+            ...(req.headers.host ? { requestHost: req.headers.host } : {}),
+          })
+          if (!view) {
+            res.writeHead(501, { "content-type": "application/json" })
+            res.end(JSON.stringify({ error: "sandbox_unavailable_for_remote_host" }))
+            return
+          }
+          res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" })
+          res.end(JSON.stringify({ url: view.url, origin: view.origin, token: view.token, mode: view.mode, shared: view.shared }))
           return
         }
 
@@ -4415,7 +4526,8 @@ export async function startHttpServer(
           // from refusing it a second time.
           const linkScreencast =
             isScreencastSessionsRoute(path) &&
-            appLinkSessionReadAuth(req, path, req.method ?? "GET", opts.appLinkKeyPath) !== undefined
+            (appLinkSessionReadAuth(req, path, req.method ?? "GET", opts.appLinkKeyPath) !== undefined ||
+              (req.method === "GET" && SESSION_READ_RE.test(path) && deviceMaySessionRead(req)))
           if (!linkScreencast && (isScreencastSessionsRoute(path) || isMutatingSessionsRoute(req.method ?? "GET", path))) {
             const gate = checkSessionsToken(req)
             if (gate !== "ok") {
@@ -6613,8 +6725,23 @@ export async function startHttpServer(
             // (app-tools.ts) is the actual enforcement; a bypass here only
             // decides whether the request reaches it at all.
             const linkAuth = appLinkToolCallAuth(req, routeAppId, opts.appLinkKeyPath)
+            // A paired device (device-access.ts): limited to the apps of its
+            // grant and, like the app's own local UI, to `ui.tools`.
+            const deviceAuth = linkAuth
+              ? ({ kind: "none" } as const)
+              : deviceToolCallAuth(req, routeAppId, {
+                  sameOrigin: isSameOriginRequest,
+                  remoteAllowed: id => opts.appRegistry!.getApp(id)?.access?.remote !== false,
+                })
+            if (deviceAuth.kind === "refused") {
+              res.writeHead(deviceAuth.status, { "content-type": "application/json", "cache-control": "no-store" })
+              res.end(JSON.stringify({ error: deviceAuth.error }))
+              return
+            }
             if (linkAuth) {
               logAppLinkAccess({ route: "tool-call", auth: linkAuth, ...(req.socket.remoteAddress ? { ip: req.socket.remoteAddress } : {}) })
+            } else if (deviceAuth.kind === "ok") {
+              // authenticated by the device token: no browser-origin or daemon-bearer gate
             } else {
               // The blob-frame widget path POSTs here from an opaque origin
               // (`Origin: null`) with `?et=` — guardBrowserOrigin itself
@@ -6626,7 +6753,7 @@ export async function startHttpServer(
             // reaches an imported tool, its AGENT.md opt-in and app grants
             // decide whether a write/approve exposed tool may run, and its
             // deny grants refuse one like the gateway does.
-            const toolCallerId = linkAuth ? undefined : resolveCallerSessionId(req)
+            const toolCallerId = linkAuth || deviceAuth.kind === "ok" ? undefined : resolveCallerSessionId(req)
             const toolCallerDesc = toolCallerId ? opts.sessions?.get(toolCallerId) : undefined
             await handleAppUiToolCall(
               req,
@@ -6753,6 +6880,11 @@ export async function startHttpServer(
   //   client → server: {kind:"ping"}              (no-op keepalive)
   const wss = new WebSocketServer({ noServer: true })
   server.on("upgrade", (req, socket, head) => {
+    // R1/R2 for WebSocket: a sandbox host or a sandbox Origin never upgrades.
+    if (mcpSandbox.classifyHost(req.headers.host) || mcpSandbox.isSandboxRequest(req)) {
+      rejectUpgrade(socket, 403, "forbidden_sandbox_origin")
+      return
+    }
     const url = req.url ?? "/"
     const path = url.split("?")[0] ?? "/"
     const ptyMatch = path.match(/^\/sessions\/([^/]+)\/pty$/)
@@ -6829,6 +6961,7 @@ export async function startHttpServer(
     server.once("error", reject)
     server.listen(opts.port, bind, () => resolve())
   })
+  await mcpSandbox.listen(bind)
 
   return {
     url: `http://${bind}:${opts.port}`,
@@ -6841,6 +6974,7 @@ export async function startHttpServer(
       // down its underlying TCP socket; live WS connections receive
       // a close frame from the kernel.
       wss.close()
+      await mcpSandbox.close()
       // Open `events/stream` responses end with their final frame (bounded wait), before sockets are severed.
       streamsClosing.abort()
       if (openStreams.size > 0) {
@@ -13705,7 +13839,7 @@ async function handleDevices(
     res.writeHead(status, { "content-type": "application/json" })
     res.end(JSON.stringify(body))
   }
-  const devices = createDeviceRegistry(registry, hostRegistry)
+  const devices = createDeviceRegistry(registry, hostRegistry, getDeviceAccessStore())
 
   if (path === "/devices" && req.method === "GET") {
     const qs = new URLSearchParams((req.url ?? "").split("?")[1] ?? "")
@@ -15431,6 +15565,25 @@ function isJsonContentType(req: IncomingMessage): boolean {
   if (typeof raw !== "string") return false
   const type = (raw.split(";")[0] ?? "").trim().toLowerCase()
   return type === "application/json" || type.endsWith("+json")
+}
+
+async function readBoundedJson(req: IncomingMessage, limit: number): Promise<unknown> {
+  const declared = Number(req.headers["content-length"])
+  if (Number.isFinite(declared) && declared > limit) throw new Error("body_too_large")
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const chunk of req) {
+    const buf = typeof chunk === "string" ? Buffer.from(chunk) : (chunk as Buffer)
+    size += buf.length
+    if (size > limit) throw new Error("body_too_large")
+    chunks.push(buf)
+  }
+  if (size === 0) return null
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"))
+  } catch {
+    return null
+  }
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {

@@ -99,6 +99,7 @@ export type {
   AppUiBuildConfig,
   AppUiInstall,
   AppUiInstallIcon,
+  AppAccess,
   OpenAIAppUiExtension,
   OpenAIEntrypoint,
   OpenAIIcon,

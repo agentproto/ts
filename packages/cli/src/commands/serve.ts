@@ -182,6 +182,8 @@ interface ServeOpts {
   /** Validated extra `frame-ancestors` sources for the app page (config
    *  `daemon.frameAncestors`), added to the built-in VS Code schemes. */
   frameAncestors?: readonly string[]
+  /** `daemon.mcpAppSandbox`, passed through to the runtime. */
+  mcpAppSandbox?: { mode?: "subdomain" | "port" | "off"; port?: number; publicOrigin?: string }
   /** Bearer token gating the gateway at boot. When set, the daemon
    *  starts already gated (mode "bearer") instead of the default
    *  open (mode "none") — no `remote_enable` call needed, and the
@@ -416,6 +418,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
     ...(allowedOrigins ? { allowedOrigins } : {}),
     ...(cfgDaemon.strictOrigins === true ? { strictOrigins: true } : {}),
     ...(frameAncestors ? { frameAncestors } : {}),
+    ...(cfgDaemon.mcpAppSandbox ? { mcpAppSandbox: cfgDaemon.mcpAppSandbox } : {}),
     ...(authToken ? { authToken } : {}),
     ...(cfgTunnel.e2e === true ? { e2e: true } : {}),
   }
@@ -1071,6 +1074,7 @@ export async function runServe(args: readonly string[]): Promise<number> {
           : {}),
         ...(opts.strictOrigins ? { strictOrigins: true } : {}),
         ...(opts.frameAncestors ? { frameAncestors: opts.frameAncestors } : {}),
+        ...(opts.mcpAppSandbox ? { mcpAppSandbox: opts.mcpAppSandbox } : {}),
         ...(opts.authToken
           ? { auth: { mode: "bearer" as const, token: opts.authToken } }
           : {}),

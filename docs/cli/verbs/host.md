@@ -2,7 +2,8 @@
 
 Two read-only verbs: [`host load`](#agentproto-host-load), the human report on why a
 machine is slow, and [`host health`](#agentproto-host-health), a verdict on whether
-it can take more agents.
+it can take more agents. A third, [`host stop-process`](#agentproto-host-stop-process),
+stops one runaway process that belongs to a daemon session.
 
 ## `agentproto host load`
 
@@ -202,3 +203,34 @@ with a note under the verdict.
 Read-only: it needs no sudo and never kills or changes anything. The session
 counts come from `GET /sessions`, the daemon check from `GET /health`, and the
 rest from the `host_load` report.
+
+## `agentproto host stop-process`
+
+```text
+agentproto host stop-process <pid> --reason <text> [--grace <ms>] [--json]
+```
+
+Stops ONE process that saturates the host (a whole-disk scan, a runaway build),
+through a narrow right the daemon checks (`POST /host/processes/:pid/stop`). It
+stops a process only when it descends from a live daemon session. The daemon
+refuses itself and its ancestors, a session's own adapter process (stop the
+session instead), another user's process, and anything outside every session.
+
+It sends SIGTERM, then SIGKILL after `--grace` only if the pid still runs the
+same command. Every attempt is logged with the caller and the reason in
+`~/.agentproto/host-stop-process.log`, and the owning session gets a system
+notice.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--reason <text>` | required | Why, at most 500 characters |
+| `--grace <ms>` | 5000 | Delay before SIGKILL, 0 to 60000 |
+| `--json` | off | Print the daemon's answer as JSON |
+
+Exit codes: `0` stopped, `3` refused, `2` daemon unavailable, `64` bad usage.
+
+`host guard` escalates a whole-disk scan at once, whatever the host level, once
+per pid, naming the owning session and this command. The built-in
+`defaults.permissionGrants` entry lets the `host-guard-escalation` session run
+`Bash(agentproto host stop-process:*)` without a prompt and nothing else (`{}`
+removes every grant).

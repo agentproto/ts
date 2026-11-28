@@ -13,10 +13,11 @@
  */
 
 import type { PairingRegistry, PairingRecord } from "./pairing-registry.js"
+import type { AccessDeviceInfo, DeviceAccessStore, DeviceGrant } from "./device-access.js"
 import { isSessionsPath, type HostRegistry, type HostRecord, type ForwardHttpRequest, type ForwardHttpResponse } from "./host-registry.js"
 
 export type DeviceRole = "client" | "host"
-export type DeviceKind = "browser" | "cli" | "daemon"
+export type DeviceKind = "browser" | "cli" | "daemon" | "app"
 
 export interface Device {
   fingerprint: string
@@ -34,6 +35,11 @@ export interface Device {
   /** A pair/v1 pairing: listed and revocable, but can't connect until
    *  re-paired — see `PairingRecord.legacy`. */
   legacy?: true
+  /** An app-scoped device (HTTP binding, `device-access.ts`): what it may open.
+   *  `fingerprint` carries its id (`dev_…`); `kind` is `"app"`. */
+  grant?: DeviceGrant
+  /** Platform the device reported when it asked for access (`android`, …). */
+  platform?: string
   /** Set when this device's pairing/host record was granted under a
    *  HOST-scoped offer (`agentproto pair offer --host`) — see
    *  offer-url.ts's "Offer scope". Surfaced from either side of a pairing so
@@ -151,11 +157,32 @@ function toHostDevice(record: HostRecord, online: boolean): Device {
   }
 }
 
-export function createDeviceRegistry(pairing: PairingRegistry, hosts?: HostRegistry): DeviceRegistry {
+/** An app-scoped device is a client device like a pairing: same list, same rename, same revoke. */
+function toAccessDevice(d: AccessDeviceInfo): Device {
+  return {
+    fingerprint: d.id,
+    name: d.name,
+    role: "client",
+    kind: "app",
+    rendezvous: "",
+    createdAt: d.createdAt,
+    lastSeen: d.lastUsedAt ?? d.createdAt,
+    online: false,
+    grant: d.grant,
+    platform: d.platform,
+  }
+}
+
+export function createDeviceRegistry(
+  pairing: PairingRegistry,
+  hosts?: HostRegistry,
+  access?: Pick<DeviceAccessStore, "list" | "rename" | "revoke">,
+): DeviceRegistry {
   return {
     async list(opts) {
       const records = await pairing.list()
       const devices = records.map(r => toDevice(r, pairing.isOnline(r.fingerprint)))
+      if (access) devices.push(...access.list().map(toAccessDevice))
       if (hosts) {
         const hostRecords = await hosts.list()
         devices.push(
@@ -168,11 +195,13 @@ export function createDeviceRegistry(pairing: PairingRegistry, hosts?: HostRegis
     },
     async rename(idOrName, newName) {
       if (await pairing.rename(idOrName, newName)) return true
+      if (access?.rename(idOrName, newName)) return true
       if (hosts) return hosts.rename(idOrName, newName)
       return false
     },
     async revoke(idOrName) {
       if (await pairing.revoke(idOrName)) return true
+      if (access?.revoke(idOrName)) return true
       if (hosts) return hosts.revoke(idOrName)
       return false
     },

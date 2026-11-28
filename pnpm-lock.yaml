@@ -4236,6 +4236,9 @@ importers:
       '@agentproto/manifest':
         specifier: workspace:*
         version: link:../manifest
+      '@agentproto/mcp-app-host':
+        specifier: workspace:*
+        version: link:../mcp-app-host
       '@agentproto/mcp-server':
         specifier: workspace:*
         version: link:../mcp-server

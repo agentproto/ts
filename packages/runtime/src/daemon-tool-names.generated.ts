@@ -134,6 +134,8 @@ const DAEMON_TOOL_NAME_LIST = [
   "desktop_conversation_read",
   "device_add",
   "device_list",
+  "device_offer",
+  "device_pair_pending",
   "device_prompt",
   "device_rename",
   "device_revoke",

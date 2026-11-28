@@ -277,6 +277,17 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
       })
     : undefined
   const category = def.category
+  if (def.access !== undefined) {
+    const a = def.access as unknown
+    if (typeof a !== "object" || a === null || Array.isArray(a)) {
+      throw new AppDefinitionError("`access` must be an object.")
+    }
+    for (const [k, v] of Object.entries(a as Record<string, unknown>)) {
+      if (k !== "remote") throw new AppDefinitionError(`\`access.${k}\` is not a supported field.`)
+      if (typeof v !== "boolean") throw new AppDefinitionError("`access.remote` must be a boolean.")
+    }
+  }
+  const access = def.access === undefined ? undefined : Object.freeze({ ...def.access })
 
   validateAttachment(agents, workflows)
   validateUniqueIds(tools, "tool")
@@ -316,6 +327,7 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
     ...(externalReadRoots !== undefined ? { externalReadRoots } : {}),
     ...(boundaries !== undefined ? { boundaries } : {}),
     ...(category !== undefined ? { category } : {}),
+    ...(access !== undefined ? { access } : {}),
 
     async toMastraAgents(opts: ToMastraAgentOptions, only?: readonly string[]) {
       const targets = only ? selectAgents(frozenAgents, only) : frozenAgents
@@ -366,6 +378,7 @@ if (def.artifact !== undefined && (typeof def.artifact.path !== "string" || def.
           ...(externalReadRoots !== undefined ? { externalReadRoots } : {}),
           ...(boundaries !== undefined ? { boundaries } : {}),
           ...(category !== undefined ? { category } : {}),
+          ...(access !== undefined ? { access } : {}),
         },
         dir,
       )
