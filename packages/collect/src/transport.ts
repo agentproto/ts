@@ -45,6 +45,20 @@ export class TransportError extends Error {
   }
 }
 
+/**
+ * Thrown by an auth-adding transport when the secret it needs is not
+ * available. The engine records the task as `skipped` with this reason; it is
+ * not a failure and does not fall back. The message names the secret, never
+ * its value.
+ */
+export class MissingSecretError extends Error {
+  readonly code = "MISSING_SECRET"
+  constructor(readonly secret: string) {
+    super(`missing secret "${secret}"`)
+    this.name = "MissingSecretError"
+  }
+}
+
 export interface HttpRequest {
   url: string
   method?: string
@@ -52,6 +66,17 @@ export interface HttpRequest {
   body?: string | Uint8Array
   timeoutMs?: number
   signal?: AbortSignal
+  /**
+   * Lower-case names of headers that carry credentials. A transport that
+   * follows redirects drops them when a hop leaves the origin.
+   */
+  credentialHeaders?: string[]
+  /**
+   * The URL itself carries a credential (a query parameter). A transport that
+   * follows redirects refuses any hop that leaves the origin, with a `blocked`
+   * error.
+   */
+  urlCredential?: boolean
 }
 
 export interface HttpResponse {

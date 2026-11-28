@@ -278,7 +278,7 @@ export const Recipe = z.object({
 })
 export type Recipe = z.infer<typeof Recipe>
 
-export const FailureCause = z.enum(["blocked", "empty", "network", "http", "parse", "other"])
+export const FailureCause = z.enum(["blocked", "empty", "network", "http", "challenge", "parse", "other"])
 export type FailureCause = z.infer<typeof FailureCause>
 
 /** Every `with*` field and `eligible` is a count of items; shares are computed by the reader. */
