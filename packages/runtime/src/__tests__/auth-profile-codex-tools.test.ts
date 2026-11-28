@@ -132,4 +132,20 @@ describe("codex profile fields over MCP", () => {
     expect(parse(cleared).profile).not.toHaveProperty("codexHome")
     await client.close()
   })
+
+  it("auth_profile_import takes the home of a discovered Codex login", async () => {
+    const client = await makeClient()
+    const ok = await client.callTool({
+      name: "auth_profile_import",
+      arguments: { origin: "codex", endpoint: "openai", id: "codex-imported", codexHome: loginHome },
+    })
+    expect(ok.isError).toBeFalsy()
+    expect(parse(ok).profile).toMatchObject({ id: "codex-imported", source: "codex", codexHome: loginHome })
+    const none = await client.callTool({
+      name: "auth_profile_import",
+      arguments: { origin: "codex", endpoint: "openai", id: "codex-none", codexHome: join(root, "empty-home") },
+    })
+    expect(none.isError).toBe(true)
+    await client.close()
+  })
 })

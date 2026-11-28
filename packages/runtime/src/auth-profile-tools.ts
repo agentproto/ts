@@ -572,11 +572,24 @@ export function registerAuthProfileTools(server: McpServer): void {
         .describe("Billing endpoint to import (must be one the origin serves, e.g. anthropic)."),
       id: z.string().optional().describe("Explicit profile id; defaults to `<origin>-<endpoint>`."),
       label: z.string().optional().describe("Optional human-readable name."),
+      codexHome: z
+        .string()
+        .optional()
+        .describe(
+          "Origin `codex` only: import the login found in this Codex home (absolute or `~/…`, " +
+            "as listed by auth_discover_credentials) as a profile carrying `codexHome`.",
+        ),
     },
-    async ({ origin, endpoint, id, label }) => {
+    async ({ origin, endpoint, id, label, codexHome }) => {
       try {
         const created = await importDiscoveredCredential(
-          { origin, endpoint, ...(id ? { id } : {}), ...(label ? { label } : {}) },
+          {
+            origin,
+            endpoint,
+            ...(id ? { id } : {}),
+            ...(label ? { label } : {}),
+            ...(codexHome ? { codexHome } : {}),
+          },
           defaultProfileProvisionDeps(),
         )
         return text({ profile: created })
