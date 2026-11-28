@@ -37,6 +37,7 @@ import {
   type FetchTransport,
   type HttpTransport,
   type SecretsPort,
+  MissingSecretError,
   TransportError,
   type TransportName,
   type TransportSet,
@@ -821,6 +822,7 @@ export function createCollector(options: CollectorOptions): Collector {
         }
       } catch (e) {
         if (aborted()) return // stays pending
+        if (e instanceof MissingSecretError) return skip(entry, e.message, "missing secret")
         failure = classifyError(e)
         // Aborted because another task of this connector met a challenge: skipped, not failed.
         if (state.stopped && !failure.challenge) return skip(entry, "challenge", "challenge")

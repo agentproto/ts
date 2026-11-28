@@ -172,3 +172,66 @@ try {
   missing step throws `StoreMigrationError`. `initStore` creates `collect.json`
   with an exclusive create, so concurrent calls are safe.
 - `rebuildSeenIndex()` rewrites `seen.idx` from the current item of each id.
+
+## HTTP and API transports (`@agentproto/collect/node`)
+
+```ts
+import { createApiTransport, createHttpTransport } from "@agentproto/collect/node"
+
+const http = createHttpTransport({ minIntervalMs: 0 }) // the engine already gates each host
+const api = createApiTransport({ http, secrets, auth: { type: "bearer", secret: "SERVICE_KEY" } })
+const collector = createCollector({ store, transports: { http, api }, connectors })
+```
+
+`createHttpTransport(options)` is `fetch` with a policy, Node built-ins only:
+
+- **Timeout** per attempt (`timeoutMs`, default 30 s; a request's own `timeoutMs` wins).
+- **Retries** (`maxAttempts`, default 3) on network errors, 429 and 5xx, with
+  exponential backoff and jitter (`baseDelayMs`, `maxBackoffMs`; `random` and
+  `clock` are injectable). POST and PATCH are not retried unless
+  `retryUnsafeMethods`.
+- **`Retry-After`** (seconds or HTTP date) replaces the backoff on 429 and 503.
+  Above `maxRetryAfterMs` (default 30 s) the request gives up at once with
+  cause `http` and status 429 (or 503), which the engine treats as a fallback.
+- **Redirects** are followed by hand (at most `maxRedirects`); `url` in the
+  response is the final one. Credential headers are dropped when a hop
+  changes origin.
+- **User-Agent** is `agentproto-collect` unless you set `userAgent` or a request header.
+- **Size cap** (`maxBytes`, default 10 MiB): a 2xx body over the cap, declared
+  or streamed, aborts the transfer with cause `http` and the response status
+  (not retried, no fallback: a bigger page is not a transport problem). A
+  non-2xx body is truncated to the cap instead.
+- **Per-host limiter** (`minIntervalMs`, default 1000, 0 turns it off). The
+  engine already gates every host by the connector's `pace.delayMs`, and that
+  gate runs first, so with both on the waits overlap instead of adding up (the
+  transport only waits for what is left of its own interval). Inside the
+  engine, set `minIntervalMs: 0` and let the connector pace; standalone, keep
+  the default.
+
+Errors are always `TransportError`, with the failed body and extension kept
+for the raw store:
+
+| Situation | `cause` | Engine reaction |
+|---|---|---|
+| 401, 403 | `blocked` | falls back |
+| 429 (retries used up or `Retry-After` too long) | `http`, status 429 | falls back |
+| verification page | `challenge` | stops the connector |
+| 2xx with no body | `empty` | falls back |
+| DNS, reset, TLS, timeout, abort | `network` | no fallback |
+| other 4xx, 5xx after retries, size cap | `http` | final |
+
+A page is a verification page when it carries `cf-mitigated: challenge`, or
+when its HTML (first 64 KiB) matches one of a short list of generic markers
+(titles such as "Just a moment" or "Attention required", "verify you are
+human", widget names such as reCAPTCHA, hCaptcha or Turnstile) and the status
+is 403, 429 or 503, or the status is 2xx and the page is under 50 KiB. Long
+pages and non-HTML content types are never flagged. The markers are
+heuristics: a page they miss is stored as a normal response.
+
+`createApiTransport({ http, secrets, auth })` adds the secret on every request:
+`{ type: "bearer" | "header" | "query" }` (`name` for header and query,
+`prefix` for header). A missing or empty secret throws `MissingSecretError`
+before any request and the engine records the task as `skipped`. The secret
+value never leaves the transport: error messages, urls and bodies are rebuilt
+with it replaced by `[redacted]`, a query-parameter secret is removed from the
+returned `url`, and the underlying error object is dropped.
