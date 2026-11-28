@@ -199,6 +199,20 @@ describe("cross-origin read gate", () => {
     )
   })
 
+  it("the per-boot token also opens HEAD and non-session read routes; `/approvals*` keeps its own gate", async () => {
+    await withDaemon(
+      async ({ port }) => {
+        const origin = "https://evil.example"
+        expect((await get(port, "/host/load", { origin })).status).toBe(403)
+        expect((await get(port, "/host/load?token=tkn", { origin })).status).toBe(200)
+        expect((await get(port, "/sessions?token=tkn", { origin }, "HEAD")).status).toBe(200)
+        // Not this gate's route: with no approvals engine wired it falls through (404), it is not a 403 from here.
+        expect((await get(port, "/approvals", { origin })).status).not.toBe(403)
+      },
+      { token: "tkn" },
+    )
+  })
+
   it("does not change write routes' own 401 contract", async () => {
     await withDaemon(async ({ port }) => {
       const r = await get(port, "/sessions", { origin: "https://evil.example", "content-type": "application/json" }, "POST")
