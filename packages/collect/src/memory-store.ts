@@ -14,6 +14,7 @@ import {
   type TaskRecord,
   TaskRecord as TaskRecordSchema,
   assertSafeName,
+  parseRawRef,
   itemSeenKeys,
   lastWins,
   makeReader,
@@ -55,6 +56,10 @@ export function memoryStore(options: { now?: () => string } = {}): CollectStore 
     if (!s) throw new Error(`unknown run ${runId}`)
     return s
   }
+  const rows = <T>(runId: string, pick: (s: RunState) => T[]): T[] => {
+    const s = runs.get(assertSafeName("run id", runId))
+    return s ? pick(s) : []
+  }
   const bySource = <T>(rows: T[], source: string | undefined, sourceFor: (r: T) => string) =>
     source === undefined ? rows : rows.filter((r) => sourceFor(r) === source)
 
@@ -64,17 +69,18 @@ export function memoryStore(options: { now?: () => string } = {}): CollectStore 
     },
 
     async putRaw(input: PutRawInput) {
-      const hash = await sha256Bytes(input.bytes)
+      const bytes = new Uint8Array(input.bytes)
+      const hash = await sha256Bytes(bytes)
       const ref = rawRef(input.connector, input.fetchedAt, hash, input.ext)
       const stored = !raws.has(ref)
-      if (stored) raws.set(ref, input.bytes.slice())
+      if (stored) raws.set(ref, bytes)
       rawIndex.push(
         RawIndexEntrySchema.parse({
           ref,
           connector: input.connector,
           hash,
           ext: input.ext,
-          bytes: input.bytes.byteLength,
+          bytes: bytes.byteLength,
           url: input.url,
           fetchedAt: input.fetchedAt,
           httpStatus: input.httpStatus,
@@ -86,7 +92,9 @@ export function memoryStore(options: { now?: () => string } = {}): CollectStore 
       return { ref, hash, stored }
     },
     async getRaw(ref) {
-      return raws.get(ref)?.slice()
+      parseRawRef(ref)
+      const b = raws.get(ref)
+      return b && new Uint8Array(b)
     },
     rawIndex: () => listReader(() => rawIndex),
 
@@ -99,7 +107,7 @@ export function memoryStore(options: { now?: () => string } = {}): CollectStore 
       const i = items.get(id)
       return i && structuredClone(i)
     },
-    items: (source) => listReader(() => bySource([...items.values()], source, (i) => i.source)),
+    items: (source) => listReader(() => bySource([...items.values()], source, (i) => sourceOf(i.id))),
 
     async appendObservation(o) {
       const parsed = Observation.parse(o)
@@ -134,9 +142,11 @@ export function memoryStore(options: { now?: () => string } = {}): CollectStore 
 
     async createRun(runId, recipe) {
       assertSafeName("run id", runId)
-      if (runs.has(runId)) throw new Error(`run ${runId} already exists`)
       const parsed = Recipe.parse(recipe)
-      const record: RunRecord = { runId, createdAt: now(), recipeHash: await recipeHash(parsed), recipe: parsed }
+      const hash = await recipeHash(parsed)
+      // Check and insert with no await in between, so two concurrent creates cannot both pass.
+      if (runs.has(runId)) throw new Error(`run ${runId} already exists`)
+      const record: RunRecord = { runId, createdAt: now(), recipeHash: hash, recipe: parsed }
       runs.set(runId, { record, tasks: [], sampling: [], events: [] })
       return structuredClone(record)
     },
@@ -152,16 +162,16 @@ export function memoryStore(options: { now?: () => string } = {}): CollectStore 
     },
     tasks: (runId) =>
       makeReader<TaskRecord>(async function* () {
-        yield* lastWins(listReader(() => run(runId).tasks), (t) => t.taskId)
+        yield* lastWins(listReader(() => rows(runId, (s) => s.tasks)), (t) => t.taskId)
       }),
     async appendSampling(runId, r) {
       run(runId).sampling.push(SamplingRecordSchema.parse(r))
     },
-    sampling: (runId) => listReader(() => run(runId).sampling),
+    sampling: (runId) => listReader(() => rows(runId, (s) => s.sampling)),
     async appendEvent(runId, e) {
       run(runId).events.push(EventRecordSchema.parse(e))
     },
-    events: (runId) => listReader(() => run(runId).events),
+    events: (runId) => listReader(() => rows(runId, (s) => s.events)),
     async writeReport(runId, report) {
       run(runId).report = RunReport.parse(report)
     },

@@ -78,21 +78,47 @@ try {
   runs/<runId>/                recipe.json, tasks.jsonl, sampling.jsonl, events.jsonl, report.json
 ```
 
-- **Raws** are gzip, named by the SHA-256 of the body. The same bytes for the
-  same connector and month land on the same path and are written once; the
-  index line is appended on every fetch, failures included.
+- **Raws** are gzip, named by the SHA-256 of the body (the input bytes are
+  copied before hashing). The same bytes for the same connector and month land
+  on the same path and are written once; an existing file is verified (gunzip
+  and hash) and rewritten if it is corrupt, in which case `stored` is `true`.
+  The index line is appended on every fetch, failures included. Refs are
+  parsed strictly (`parseRawRef`): anything but
+  `raw/<connector>/<yyyy-mm>/<sha256>.<ext>.gz` is rejected.
+- **Source filter**: items, observations and actors are filed by the prefix of
+  their id (`hn` for `hn:1`, also for an actor ref). The `source` argument of
+  `items()`, `observations()` and `actors()` means that prefix, in both stores.
 - **Reads** skip lines that are not JSON or fail schema validation and count
-  them in `reader.skipped`; they never throw.
-- **Lock**: `collect.lock`, created with `O_EXCL`, holding pid, host, timestamp
-  and a token. A second `acquireLock()` throws `StoreLockedError`. A lock is
-  stale when it was written on this host by a pid that no longer exists; a
-  stale lock is broken automatically. A lock from another host, or an
-  unreadable lock file, is never broken: remove it by hand.
+  them in `reader.skipped`; they never throw. Only a missing file counts as
+  empty; any other I/O error is raised. `getItem(id)` streams one source file
+  and keeps the last match. A full `items()` read keeps the last line per id
+  and buffers the unique ids of the files it reads in a map; run `compact`
+  (planned) to keep files small.
+- **Torn appends**: before the first append to a log file in a process (inside
+  the write queue), a file whose last byte is not a newline gets a newline, so
+  a torn tail stays a single skipped line. A torn `seen.idx` tail is ignored
+  on load and removed once the lock is held.
+- **Lock**: `collect.lock` is written to a unique tmp file and hard-linked into
+  place, so it never exists empty; `EEXIST` means held, and a second
+  `acquireLock()` throws `StoreLockedError`. A lock is stale when it was
+  written on this host by a pid that is not alive (`pidAlive`, default
+  `process.kill(pid, 0)`); a stale lock is broken automatically: the file is
+  renamed to `collect.lock.stale-<token>` (one process wins the rename), read
+  again, and only removed if it is still the dead holder's pid and token;
+  otherwise it is linked back and the store is reported locked. A lock from
+  another host, or an unreadable one, is never broken: remove it by hand.
+  Taking the lock reloads the seen index from disk.
 - **Writes** inside a process go through one queue, so appends never
-  interleave. One writer per store is assumed across processes: take the lock.
+  interleave; `seenAdd` persists before it updates the in-memory set and
+  `rebuildSeenIndex` runs entirely inside the queue. One writer per store is
+  assumed across processes: take the lock. Writing a task, sampling line,
+  event or report for a run that was not created throws.
 - **Versions**: `openStore` accepts the current schema version and refuses a
-  newer one with `StoreVersionError`. For an older one it runs
+  newer one with `StoreVersionError`. For an older one it takes the lock
+  (`StoreLockedError` if held), reads the version again, runs
   `options.migrations` (`{ [fromVersion]: ({ root }) => Promise<void> }`, each
-  step moves N to N + 1) and rewrites `collect.json`; a missing step throws
-  `StoreMigrationError`.
+  step moves N to N + 1) and rewrites `collect.json` after each step. A
+  migration can be interrupted and run again, so write it to be idempotent. A
+  missing step throws `StoreMigrationError`. `initStore` creates `collect.json`
+  with an exclusive create, so concurrent calls are safe.
 - `rebuildSeenIndex()` rewrites `seen.idx` from the current item of each id.

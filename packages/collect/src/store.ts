@@ -106,9 +106,10 @@ export interface CollectStore {
   /** Insert or replace an item: the last write for an id wins. */
   upsertItem(item: CollectItem): Promise<void>
   getItem(id: string): Promise<CollectItem | undefined>
-  /** Current version of each item. Restrict to one source with `source`. */
+  /** Current version of each item. `source` is the prefix of the item id (`hn` for `hn:1`), which is also the file the item is kept in. */
   items(source?: string): Reader<CollectItem>
 
+  /** Observations, actors: filed by the id prefix (`itemId` / `ref`), and `source` filters on that prefix. */
   appendObservation(observation: Observation): Promise<void>
   observations(source?: string): Reader<Observation>
   appendActor(actor: Actor): Promise<void>
@@ -126,7 +127,7 @@ export interface CollectStore {
   createRun(runId: string, recipe: Recipe): Promise<RunRecord>
   getRun(runId: string): Promise<RunRecord | undefined>
   listRuns(): Promise<string[]>
-  /** Append a task state; the last line for a task id is its current state. */
+  /** The run-log writers below throw when the run was not created. Append a task state; the last line for a task id is its current state. */
   appendTask(runId: string, task: TaskRecord): Promise<void>
   tasks(runId: string): Reader<TaskRecord>
   appendSampling(runId: string, record: SamplingRecord): Promise<void>
@@ -222,9 +223,20 @@ export async function recipeHash(recipe: Recipe): Promise<string> {
   return sha256Hex(stableStringify(recipe))
 }
 
+const RAW_REF = /^raw\/([A-Za-z0-9][A-Za-z0-9._-]*)\/(\d{4}-\d{2})\/([0-9a-f]{64})\.([A-Za-z0-9][A-Za-z0-9._-]*)\.gz$/
+
+/** Strict parser of a raw ref. Throws on anything that is not exactly `raw/<connector>/<yyyy-mm>/<sha256>.<ext>.gz`. */
+export function parseRawRef(ref: string): { connector: string; month: string; hash: string; ext: string } {
+  const m = RAW_REF.exec(ref)
+  if (!m || ref.includes("..") || ref.includes("\\")) throw new Error(`invalid raw ref "${ref}"`)
+  return { connector: m[1]!, month: m[2]!, hash: m[3]!, ext: m[4]! }
+}
+
 /** Relative path of a stored raw body. */
 export function rawRef(connector: string, fetchedAt: string, hash: string, ext: string): string {
-  return `raw/${assertSafeName("connector", connector)}/${monthOf(fetchedAt)}/${hash}.${assertSafeName("extension", ext)}.gz`
+  const ref = `raw/${assertSafeName("connector", connector)}/${monthOf(fetchedAt)}/${hash}.${assertSafeName("extension", ext)}.gz`
+  parseRawRef(ref)
+  return ref
 }
 
 /** Build a `Reader` from a generator that reports each skipped line through `onSkip`. */
