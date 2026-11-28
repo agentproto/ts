@@ -258,7 +258,7 @@ export const Recipe = z.object({
             max: z.number().optional(),
             /** Most candidates this band keeps. */
             quota: z.number().int().nonnegative().optional(),
-          }),
+          }).refine((b) => b.min === undefined || b.max === undefined || b.min <= b.max, { message: "band min must not exceed max", path: ["min"] }),
         )
         .optional(),
       /** Keep a candidate whose band counter is missing instead of dropping it as `no_metric`. */

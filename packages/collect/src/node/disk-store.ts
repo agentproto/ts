@@ -554,6 +554,15 @@ class DiskStore implements CollectStore {
   async appendSampling(runId: string, r: SamplingRecord) {
     await this.appendRunLine(runId, "sampling.jsonl", SamplingRecord.parse(r))
   }
+  async appendSamplingBatch(runId: string, rs: SamplingRecord[]) {
+    if (rs.length === 0) return
+    const dir = this.runDir(runId)
+    const text = rs.map((r) => JSON.stringify(SamplingRecord.parse(r))).join("\n")
+    await this.enqueue(async () => {
+      if (!(await exists(join(dir, "recipe.json")))) throw new Error(`unknown run ${runId}`)
+      await this.appendLine(join(dir, "sampling.jsonl"), text)
+    })
+  }
   sampling(runId: string) {
     return this.lines(join(this.runDir(runId), "sampling.jsonl"), SamplingRecord)
   }

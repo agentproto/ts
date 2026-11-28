@@ -204,22 +204,42 @@ Steps, in this order, for each candidate:
    Beyond the cap the candidate is dropped as `domain_cap`. A candidate that
    fails a rule does not use up the quota or cap of the other rule.
 3. **Seed.** When a quota or cap forces a choice, `seed` makes it
-   deterministic: within each task's candidates, sorted by stable id, a
-   mulberry32 shuffle seeded from `seed` and the task decides the order, so the
-   same recipe, seed and candidates give the same selection whatever the order
-   the connector listed them in. Without a seed the first seen in plan order
-   is kept. Quotas and caps are shared by all tasks of a connector, in the
-   order tasks reach ingestion; use `workers: 1` when the selection across tasks
-   must follow plan order exactly.
+   deterministic: within each task's candidates, a mulberry32 shuffle seeded
+   from `seed` and the task decides the order (candidates sorted by stable id
+   first), so the same recipe, seed and candidates give the same selection
+   whatever order the connector listed them in. Without a seed the first seen
+   in plan order is kept.
 
-Every candidate gets exactly one line in `runs/<id>/sampling.jsonl`:
+Quotas, caps and the seed are all per connector: two connectors in one recipe
+each have their own band counters and their own per-domain counts.
+
+**Guarantee.** Fetching and parsing run in parallel, but outcomes are committed
+(sampling, dedup, writes) strictly in plan order (`order` of the task, a
+follow-up task right after its parent). A terminal failure or skip releases its
+turn; a task in transport fallback keeps it. So the kept set does not depend on
+worker count, latency or which transport answered first: it is identical to a
+`workers: 1` run.
+
+**Which candidates are sampled.** An item that already exists in the store
+(same id or same canonical URL) is a known item: it is not sampled, uses no
+quota or cap, and gets its new observation as usual. Among the new ones, a
+repeated id and several ids sharing one canonical URL form one candidate, so
+aliases cannot use several slots; it is decided on the member with the highest
+counter (ties: smaller URL, then smaller id), and a later alias of a decided
+candidate follows that decision without a line of its own.
+
+Every distinct candidate gets exactly one line in `runs/<id>/sampling.jsonl`:
 `candidate`, `decision` (`kept` or `dropped`), `rule` when dropped, `band`,
-`domain`, `seed`, `connector`, `taskId`, `at`. A dropped candidate writes no
+`url`, `domain`, `seed`, `connector`, `taskId`, `at`. A dropped candidate writes no
 item, no observation, no pickup, no seen key, and no actor only it
 referenced, and is not counted as new, so coverage counts kept items only.
-Candidates already in the store from an earlier run are sampled like any other.
 
-On `resume`, the counters are rebuilt from `sampling.jsonl` and a candidate
-already decided keeps its decision, so an interrupted run resumed makes the
-same choices as an uninterrupted one. The report adds, per connector,
+A task's lines are written in one append (`appendSamplingBatch`) before any
+counter moves; if that write fails the run stops with a run error and nothing of
+that task is ingested. On `resume` the counters are rebuilt from
+`sampling.jsonl`, and a task that has its decisions but is not `done` reuses
+them by candidate id; a candidate that is new after the refetch is decided
+fresh. A decision kept for a candidate that a changed page no longer returns
+stays reserved against its quota or cap (accepted: the page changed between
+attempts). The report adds, per connector,
 `sampled: { candidates, kept, dropped: { [rule]: n } }`.

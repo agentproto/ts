@@ -41,11 +41,11 @@ export function hashString(s: string): number {
   return h >>> 0
 }
 
-/** Host of a URL, lower-cased, with a leading `www.` removed. No public-suffix list. */
+/** Host of a URL, lower-cased, without a trailing DNS root dot and without a leading `www.`. No public-suffix list. */
 export function domainOf(url: string | undefined): string | undefined {
   if (!url) return undefined
   try {
-    const host = new URL(url).hostname.toLowerCase().replace(/^www\./, "")
+    const host = new URL(url).hostname.toLowerCase().replace(/\.$/, "").replace(/^www\./, "")
     return host || undefined
   } catch {
     return undefined
@@ -55,7 +55,7 @@ export function domainOf(url: string | undefined): string | undefined {
 /**
  * The host a candidate counts against: for a submission, the host of the
  * article it points to (`links.target` when it is a URL, else the first
- * outbound link); otherwise the host of its own canonical URL.
+ * outbound link); otherwise, or when neither is a URL, the host of its own URL.
  */
 export function candidateDomain(c: SamplingCandidate): string | undefined {
   if (c.kind === "submission") {
@@ -81,93 +81,177 @@ export function seededOrder<T extends { id: string }>(items: T[], seed: number, 
   return sorted
 }
 
+export interface SamplingPlan {
+  /** New decisions to persist, one per distinct candidate, in decision order. */
+  lines: SamplingDecision[]
+  /** Ids (representatives and their repeats or URL aliases) whose records must not be written. */
+  dropped: Set<string>
+}
+
 export interface Sampler {
   /**
-   * Decide a batch. Returns one decision per distinct candidate id, in decision
-   * order; a candidate already decided (earlier in the run, or in `prior`)
-   * returns its earlier decision with `fresh: false`.
+   * Decide a batch without changing any counter. Candidates already decided
+   * (in this run or in the journal) reuse their decision and produce no line.
+   * `known` holds the ids of candidates whose item already exists: they are not
+   * sampled and use no budget. Repeats of an id, and candidates sharing a URL,
+   * form one group that gets one decision, taken on the member with the highest
+   * metric value (ties: smaller URL, then smaller id).
    */
-  decide(batchKey: string, candidates: SamplingCandidate[]): Array<{ decision: SamplingDecision; fresh: boolean }>
+  plan(batchKey: string, candidates: SamplingCandidate[], known?: ReadonlySet<string>): SamplingPlan
+  /** Take a plan's lines into the counters. Call it once they are persisted. */
+  apply(lines: SamplingDecision[]): void
+}
+
+interface Group {
+  members: SamplingCandidate[]
 }
 
 /**
  * Counters live in the sampler and are rebuilt from `prior` (the lines of
  * `sampling.jsonl`), so a resumed run takes the same decisions.
  */
-export function createSampler(config: SamplingConfig, primary: MetricName | undefined, prior: SamplingRecord[]): Sampler {
+export function createSampler(config: SamplingConfig, primary: MetricName | undefined, prior: SamplingDecision[]): Sampler {
   const bands = config.bands ?? []
+  const seed = config.seed
   const decided = new Map<string, SamplingDecision>()
+  const decidedUrl = new Map<string, SamplingDecision>()
   const bandKept = bands.map(() => 0)
   const domainKept = new Map<string, number>()
-  for (const r of prior) {
-    if (decided.has(r.candidate)) continue
-    const { at: _at, connector: _c, taskId: _t, ...decision } = r
-    decided.set(r.candidate, decision)
-    if (r.decision === "kept") {
-      if (r.band !== undefined && r.band < bandKept.length) bandKept[r.band]!++
-      if (r.domain) domainKept.set(r.domain, (domainKept.get(r.domain) ?? 0) + 1)
+
+  function apply(lines: SamplingDecision[]) {
+    for (const d of lines) {
+      if (decided.has(d.candidate)) continue
+      decided.set(d.candidate, d)
+      if (d.url && !decidedUrl.has(d.url)) decidedUrl.set(d.url, d)
+      if (d.decision !== "kept") continue
+      if (d.band !== undefined && d.band < bandKept.length) bandKept[d.band]!++
+      if (d.domain) domainKept.set(d.domain, (domainKept.get(d.domain) ?? 0) + 1)
     }
   }
-  const seed = config.seed
+  apply(prior)
 
-  function decideOne(c: SamplingCandidate): SamplingDecision {
-    const domain = candidateDomain(c)
-    const base = { candidate: c.id, ...(domain ? { domain } : {}), ...(seed !== undefined ? { seed } : {}) }
-    const dropped = (rule: string, band?: number): SamplingDecision => ({
-      ...base,
-      decision: "dropped",
-      rule,
-      ...(band !== undefined ? { band } : {}),
-    })
-    let band: number | undefined
-    if (bands.length > 0) {
-      const metric = (i: number) => bands[i]!.metric ?? primary
-      let missing = true
-      for (let i = 0; i < bands.length; i++) {
-        const name = metric(i)
-        const v = name ? c.metrics[name] : undefined
-        if (v === undefined) continue
-        missing = false
-        const b = bands[i]!
-        if ((b.min === undefined || v >= b.min) && (b.max === undefined || v <= b.max)) {
-          band = i
-          break
+  const bandMetric = (i: number) => bands[i]!.metric ?? primary
+  /** The value a group's representative is picked on: the first band metric it has, else the primary counter. */
+  function rank(c: SamplingCandidate): number {
+    for (let i = 0; i < bands.length; i++) {
+      const m = bandMetric(i)
+      const v = m ? c.metrics[m] : undefined
+      if (v !== undefined) return v
+    }
+    const v = primary ? c.metrics[primary] : undefined
+    return v ?? Number.NEGATIVE_INFINITY
+  }
+  function representative(g: Group): SamplingCandidate {
+    return [...g.members].sort((a, b) => {
+      const d = rank(b) - rank(a)
+      if (d !== 0 && !Number.isNaN(d)) return d
+      const ua = a.url ?? "￿"
+      const ub = b.url ?? "￿"
+      if (ua !== ub) return ua < ub ? -1 : 1
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+    })[0]!
+  }
+
+  function plan(batchKey: string, candidates: SamplingCandidate[], known: ReadonlySet<string> = new Set()): SamplingPlan {
+    // Groups: one per id, merged when two ids share a URL.
+    const groups: Group[] = []
+    const byId = new Map<string, Group>()
+    const byUrl = new Map<string, Group>()
+    for (const c of candidates) {
+      let g = byId.get(c.id) ?? (c.url ? byUrl.get(c.url) : undefined)
+      if (!g) {
+        g = { members: [] }
+        groups.push(g)
+      }
+      const other = c.url ? byUrl.get(c.url) : undefined
+      if (other && other !== g) {
+        for (const m of other.members) {
+          g.members.push(m)
+          byId.set(m.id, g)
+          if (m.url) byUrl.set(m.url, g)
+        }
+        groups.splice(groups.indexOf(other), 1)
+      }
+      g.members.push(c)
+      byId.set(c.id, g)
+      if (c.url) byUrl.set(c.url, g)
+    }
+
+    // Every group that is not already an item is ordered together, those decided in the journal included,
+    // so a task redone after a crash takes its remaining decisions in the same positions as an uninterrupted one.
+    const dropped = new Set<string>()
+    const pool: Array<{ id: string; g: Group; rep: SamplingCandidate; earlier?: SamplingDecision }> = []
+    for (const g of groups) {
+      let earlier: SamplingDecision | undefined
+      for (const m of g.members) earlier ??= decided.get(m.id) ?? (m.url ? decidedUrl.get(m.url) : undefined)
+      if (!earlier && g.members.some((m) => known.has(m.id))) continue
+      const rep = representative(g)
+      pool.push({ id: rep.id, g, rep, earlier })
+    }
+
+    // Counters as they will be once this plan is applied; the real ones stay untouched until `apply`.
+    const bandLocal = [...bandKept]
+    const domainLocal = new Map<string, number>()
+    const domainCount = (d: string) => (domainKept.get(d) ?? 0) + (domainLocal.get(d) ?? 0)
+
+    function decideOne(c: SamplingCandidate): SamplingDecision {
+      const domain = candidateDomain(c)
+      const base = {
+        candidate: c.id,
+        ...(c.url ? { url: c.url } : {}),
+        ...(domain ? { domain } : {}),
+        ...(seed !== undefined ? { seed } : {}),
+      }
+      const drop = (rule: string, band?: number): SamplingDecision => ({
+        ...base,
+        decision: "dropped",
+        rule,
+        ...(band !== undefined ? { band } : {}),
+      })
+      let band: number | undefined
+      if (bands.length > 0) {
+        let missing = true
+        for (let i = 0; i < bands.length; i++) {
+          const m = bandMetric(i)
+          const v = m ? c.metrics[m] : undefined
+          if (v === undefined) continue
+          missing = false
+          const b = bands[i]!
+          if ((b.min === undefined || v >= b.min) && (b.max === undefined || v <= b.max)) {
+            band = i
+            break
+          }
+        }
+        if (band === undefined) {
+          if (!missing) return drop("out_of_bands")
+          if (!config.keepMissingMetric) return drop("no_metric")
         }
       }
-      if (band === undefined) {
-        if (missing && !config.keepMissingMetric) return dropped("no_metric")
-        if (!missing) return dropped("out_of_bands")
+      if (band !== undefined) {
+        const quota = bands[band]!.quota
+        if (quota !== undefined && bandLocal[band]! >= quota) return drop("band_quota", band)
       }
+      if (domain && config.perDomainCap !== undefined && domainCount(domain) >= config.perDomainCap) {
+        return drop("domain_cap", band)
+      }
+      if (band !== undefined) bandLocal[band]!++
+      if (domain) domainLocal.set(domain, (domainLocal.get(domain) ?? 0) + 1)
+      return { ...base, decision: "kept", ...(band !== undefined ? { band } : {}) }
     }
-    if (band !== undefined) {
-      const quota = bands[band]!.quota
-      if (quota !== undefined && bandKept[band]! >= quota) return dropped("band_quota", band)
+
+    const ordered = seed !== undefined ? seededOrder(pool, seed, batchKey) : pool
+    const lines: SamplingDecision[] = []
+    for (const { g, rep, earlier } of ordered) {
+      if (earlier) {
+        if (earlier.decision === "dropped") for (const m of g.members) dropped.add(m.id)
+        continue
+      }
+      const d = decideOne(rep)
+      lines.push(d)
+      if (d.decision === "dropped") for (const m of g.members) dropped.add(m.id)
     }
-    if (domain && config.perDomainCap !== undefined && (domainKept.get(domain) ?? 0) >= config.perDomainCap) {
-      return dropped("domain_cap", band)
-    }
-    if (band !== undefined) bandKept[band]!++
-    if (domain) domainKept.set(domain, (domainKept.get(domain) ?? 0) + 1)
-    return { ...base, decision: "kept", ...(band !== undefined ? { band } : {}) }
+    return { lines, dropped }
   }
 
-  return {
-    decide(batchKey, candidates) {
-      const unique: SamplingCandidate[] = []
-      const seenHere = new Set<string>()
-      for (const c of candidates) {
-        if (seenHere.has(c.id)) continue
-        seenHere.add(c.id)
-        unique.push(c)
-      }
-      const ordered = seed !== undefined ? seededOrder(unique, seed, batchKey) : unique
-      return ordered.map((c) => {
-        const earlier = decided.get(c.id)
-        if (earlier) return { decision: earlier, fresh: false }
-        const decision = decideOne(c)
-        decided.set(c.id, decision)
-        return { decision, fresh: true }
-      })
-    },
-  }
+  return { plan, apply }
 }

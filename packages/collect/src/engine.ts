@@ -572,10 +572,41 @@ export function createCollector(options: CollectorOptions): Collector {
     const laneQueue = (e: Entry) =>
       states.get(e.connector.id)?.transports[e.attempt] === "browser" ? browserQueue : poolQueue
     const enqueue = (e: Entry) => insertSorted(laneQueue(e), e)
-    for (const e of entries) enqueue(e)
     let poolActive = 0
     let browserActive = 0
     let totalStarted = counted.size
+    let commitsActive = 0
+    // Commit stage: fetch and parse run in parallel, but outcomes are committed
+    // (sampling, dedup, writes) in `order`. A slot is resolved when its task is done,
+    // failed or skipped; a task in fallback keeps its slot.
+    const slots: Entry[] = []
+    const waiters = new Map<Entry, () => void>()
+    const wakeHead = () => {
+      const head = slots[0]
+      const w = head && waiters.get(head)
+      if (w) {
+        waiters.delete(head!)
+        w()
+      }
+    }
+    const resolveSlot = (e: Entry) => {
+      const i = slots.indexOf(e)
+      if (i >= 0) slots.splice(i, 1)
+      wakeHead()
+    }
+    const registerSlot = (e: Entry) => insertSorted(slots, e)
+    /** True once every earlier slot is resolved; false when the run stops first (the task stays pending). */
+    async function awaitTurn(e: Entry): Promise<boolean> {
+      while (slots.length > 0 && slots[0] !== e && slots.includes(e)) {
+        if (stopping()) return false
+        await new Promise<void>((resolve) => waiters.set(e, resolve))
+      }
+      return true
+    }
+    for (const e of entries) {
+      registerSlot(e)
+      enqueue(e)
+    }
     let fatal: Error | undefined
     const aborted = () => signal?.aborted === true
     const stopping = () => aborted() || fatal !== undefined
@@ -584,7 +615,8 @@ export function createCollector(options: CollectorOptions): Collector {
       finish = resolve
     })
     const check = () => {
-      if (poolActive === 0 && browserActive === 0 && (stopping() || (!poolQueue.length && !browserQueue.length))) finish()
+      if (stopping()) for (const [e, w] of [...waiters]) (waiters.delete(e), w())
+      if (poolActive === 0 && browserActive === 0 && commitsActive === 0 && (stopping() || (!poolQueue.length && !browserQueue.length))) finish()
     }
     const pump = () => {
       if (!stopping()) {
@@ -624,6 +656,7 @@ export function createCollector(options: CollectorOptions): Collector {
         escalations: entry.escalations,
       })
       await emit("task.skipped", { connector: entry.connector.id, taskId: entry.task.id, reason: why })
+      resolveSlot(entry)
     }
 
     /**
@@ -700,13 +733,18 @@ export function createCollector(options: CollectorOptions): Collector {
 
     /**
      * Sampling of the candidates a task's parse returned. Tasks of kind `read`
-     * (fetch by URL) are not sampled. A dropped candidate loses its item, its
-     * observations, its pickups and the actors only it referenced.
+     * (fetch by URL) are not sampled, and neither are candidates whose item
+     * already exists (they only add their observation). The whole decision
+     * batch is persisted in one append before any counter moves. A dropped
+     * candidate loses its item, observations, pickups and the actors only it
+     * referenced.
      */
     async function sample(entry: Entry, prepared: Prepared[]): Promise<Prepared[]> {
       if (recipe.sampling === undefined || entry.task.kind === "read") return prepared
-      const candidates = prepared.flatMap((p) =>
-        p.items.map((item) => {
+      const known = new Set<string>()
+      const candidates = []
+      for (const p of prepared) {
+        for (const item of p.items) {
           const metrics: Partial<Record<MetricName, number>> = {}
           for (const o of p.observations) {
             if (o.itemId !== item.id) continue
@@ -714,23 +752,28 @@ export function createCollector(options: CollectorOptions): Collector {
               if (typeof v === "number" && metrics[name as MetricName] === undefined) metrics[name as MetricName] = v
             }
           }
-          return {
-            id: item.id,
-            kind: item.kind,
-            metrics,
-            url: item.canonicalUrl ?? item.url,
-            target: item.links?.target,
-            outboundLinks: item.outboundLinks,
+          const url = item.canonicalUrl ?? item.url
+          const idKey = seenKey("id", item.id)
+          if (
+            (await store.seenGet(idKey)) !== undefined ||
+            (await store.seenHas(idKey)) ||
+            (item.canonicalUrl !== undefined && (await store.seenGet(seenKey("url", item.canonicalUrl))) !== undefined)
+          ) {
+            known.add(item.id)
           }
-        }),
-      )
-      const sampler = await samplerFor(entry.connector)
-      const decisions = sampler.decide(entry.key, candidates)
-      for (const { decision, fresh } of decisions) {
-        if (!fresh) continue
-        await store.appendSampling(runId, { ...decision, connector: entry.connector.id, taskId: entry.key, at: iso() })
+          candidates.push({ id: item.id, kind: item.kind, metrics, url, target: item.links?.target, outboundLinks: item.outboundLinks })
+        }
       }
-      const dropped = new Set(decisions.filter((d) => d.decision.decision === "dropped").map((d) => d.decision.candidate))
+      const sampler = await samplerFor(entry.connector)
+      const { lines, dropped } = sampler.plan(entry.key, candidates, known)
+      if (lines.length > 0) {
+        const at = iso()
+        await store.appendSamplingBatch(
+          runId,
+          lines.map((d) => ({ ...d, connector: entry.connector.id, taskId: entry.key, at })),
+        )
+        sampler.apply(lines)
+      }
       if (dropped.size === 0) return prepared
       const refsOf = (i: CollectItem) => [i.authorRef, i.submitterRef, ...(i.parts ?? []).map((part) => part.authorRef)]
       const keptRefs = new Set(prepared.flatMap((p) => p.items.filter((i) => !dropped.has(i.id))).flatMap(refsOf))
@@ -838,6 +881,7 @@ export function createCollector(options: CollectorOptions): Collector {
         message: failure.message,
         durationMs,
       })
+      resolveSlot(entry)
     }
 
     /** One attempt on one transport. A fallback queues the next attempt in the next transport's lane. */
@@ -934,9 +978,9 @@ export function createCollector(options: CollectorOptions): Collector {
         return finishFailed(entry, f)
       }
 
-      // Success: keep the raws, parse and validate every one, then write, then mark done.
-      const counters: TaskCounters = { items: 0, newItems: 0, duplicates: 0, observations: 0, metricValues: 0 }
-      let followUps: Entry[] = []
+      // Success: keep the raws, parse and validate every one. The commit waits for its turn.
+      const prepared: Prepared[] = []
+      const tasks: Task[] = []
       const parseError = await write(async (): Promise<string | undefined> => {
         const stored: Array<{ raw: FetchedRaw; ref: string; hash: string }> = []
         for (const raw of result!.raws) {
@@ -952,8 +996,6 @@ export function createCollector(options: CollectorOptions): Collector {
           })
           stored.push({ raw, ref: put.ref, hash: put.hash })
         }
-        const prepared: Prepared[] = []
-        const tasks: Task[] = []
         try {
           for (const { raw, ref, hash } of stored) {
             const parsed = await connector.parse({
@@ -967,7 +1009,37 @@ export function createCollector(options: CollectorOptions): Collector {
         } catch (e) {
           return e instanceof Error ? e.message : String(e)
         }
-        // Everything is valid: from here on, write.
+        return undefined
+      })
+      if (parseError !== undefined) {
+        return finishFailed(entry, { fallback: false, challenge: false, cause: "parse", message: parseError })
+      }
+      // The head of the order commits right away and keeps its worker. Any other task
+      // gives its worker back and waits detached, so a later task can never hold the lane
+      // an earlier one needs (a fallback into the browser lane, say).
+      if (slots[0] === entry || !slots.includes(entry)) return commit(entry, prepared, tasks, name)
+      commitsActive++
+      const p: Promise<void> = commit(entry, prepared, tasks, name)
+        .catch((e) => {
+          if (stopping() && (e as { name?: string })?.name === "AbortError") return
+          fatal ??= toError(e)
+        })
+        .finally(() => {
+          active.delete(p)
+          commitsActive--
+          pump()
+        })
+      active.add(p)
+    }
+
+    /** Commit one task's outcome: sampling, dedup and writes, then `done`. Runs in `order`, never before an earlier slot resolves. */
+    async function commit(entry: Entry, prepared: Prepared[], tasks: Task[], name: TransportName): Promise<void> {
+      const connector = entry.connector
+      const state = states.get(connector.id)!
+      if (!(await awaitTurn(entry))) return // stays pending
+      const counters: TaskCounters = { items: 0, newItems: 0, duplicates: 0, observations: 0, metricValues: 0 }
+      const followUps: Entry[] = []
+      await write(async () => {
         await ingest(await sample(entry, prepared), counters)
         tasks.forEach((task, j) => {
           const k = key(connector.id, task.id)
@@ -975,7 +1047,9 @@ export function createCollector(options: CollectorOptions): Collector {
           known.add(k)
           followUps.push(mkEntry(state, k, task, [...entry.order, j]))
         })
+        // Follow-ups take their slots before the parent's slot is released.
         for (const f of followUps) {
+          registerSlot(f)
           await store.appendTask(runId, {
             taskId: f.key,
             connector: connector.id,
@@ -996,11 +1070,8 @@ export function createCollector(options: CollectorOptions): Collector {
           counters: { ...counters, durationMs: clock.now() - entry.t0 },
           updatedAt: iso(),
         })
-        return undefined
       })
-      if (parseError !== undefined) {
-        return finishFailed(entry, { fallback: false, challenge: false, cause: "parse", message: parseError })
-      }
+      resolveSlot(entry)
       for (const f of followUps) enqueue(f)
       await emit("task.end", {
         connector: connector.id,

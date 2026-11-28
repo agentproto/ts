@@ -187,6 +187,10 @@ export function memoryStore(options: { now?: () => string } = {}): CollectStore 
     async appendSampling(runId, r) {
       run(runId).sampling.push(SamplingRecordSchema.parse(r))
     },
+    async appendSamplingBatch(runId, rs) {
+      const parsed = rs.map((r) => SamplingRecordSchema.parse(r))
+      run(runId).sampling.push(...parsed)
+    },
     sampling: (runId) => listReader(() => rows(runId, (s) => s.sampling)),
     async appendEvent(runId, e) {
       run(runId).events.push(EventRecordSchema.parse(e))
