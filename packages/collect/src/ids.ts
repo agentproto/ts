@@ -18,7 +18,6 @@ const TRACKING_PARAMS = new Set([
   "ttclid",
   "mc_cid",
   "mc_eid",
-  "ref",
   "ref_src",
   "ref_url",
   "igshid",

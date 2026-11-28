@@ -14,7 +14,7 @@ filesystem, no network, one runtime dependency (`zod`).
   no id.
 - **`canonicalUrl(url)`**: lowercase host, no fragment, no credentials, no
   default port, tracking parameters removed (`utm_*`, `fbclid`, `gclid`,
-  `mc_cid`, `mc_eid`, `ref`, `ref_src`, `igshid`, `si`, ...), remaining
+  `mc_cid`, `mc_eid`, `ref_src`, `igshid`, `si`, ...), remaining
   parameters sorted, no trailing slash.
 - **`textFingerprint(text)`**: SHA-256 of the text after case, whitespace and
   punctuation normalisation. Hashing goes through Web Crypto

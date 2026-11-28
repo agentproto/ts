@@ -1,6 +1,9 @@
 import { z } from "zod"
 
-const isoDate = z.string().min(1)
+/** Full timestamp with offset, e.g. 2026-11-28T10:00:00Z or 2026-11-28T10:00:00+01:00. */
+const timestamp = z.iso.datetime({ offset: true })
+/** Editorial or platform date: a calendar day or a full timestamp. */
+const dateOrTimestamp = z.union([z.iso.date(), z.iso.datetime({ offset: true })])
 
 export const ItemKind = z.enum(["article", "post", "thread", "submission", "review", "video", "query"])
 export type ItemKind = z.infer<typeof ItemKind>
@@ -42,7 +45,7 @@ export const ItemPart = z.object({
   id: z.string().min(1),
   text: z.string(),
   authorRef: z.string().optional(),
-  postedAt: isoDate.optional(),
+  postedAt: dateOrTimestamp.optional(),
 })
 export type ItemPart = z.infer<typeof ItemPart>
 
@@ -64,9 +67,9 @@ export const CollectItem = z.object({
   format: z.string().optional(),
   authorRef: z.string().optional(),
   submitterRef: z.string().optional(),
-  publishedAt: isoDate.optional(),
-  postedAt: isoDate.optional(),
-  firstSeenAt: isoDate,
+  publishedAt: dateOrTimestamp.optional(),
+  postedAt: dateOrTimestamp.optional(),
+  firstSeenAt: timestamp,
   links: ItemLinks.optional(),
   outboundLinks: z.array(z.string()).optional(),
   parts: z.array(ItemPart).optional(),
@@ -82,17 +85,39 @@ export type CollectItem = z.infer<typeof CollectItem>
 /** A counter is a number or absent. Absent is never read as zero: see `missing`. */
 const metricValues = z.partialRecord(MetricName, z.number())
 
-export const Observation = z.object({
-  itemId: z.string().min(1),
-  measuredAt: isoDate,
-  metrics: metricValues.default({}),
-  partMetrics: z.record(z.string(), metricValues).optional(),
-  rawValues: z.partialRecord(MetricName, z.string()).optional(),
-  missing: z.partialRecord(MetricName, MissingReason).optional(),
-  transport: z.string().optional(),
-  runId: z.string().optional(),
-  rawRef: z.string().optional(),
-})
+export const Observation = z
+  .object({
+    itemId: z.string().min(1),
+    measuredAt: timestamp,
+    metrics: metricValues.default({}),
+    partMetrics: z.record(z.string(), metricValues).optional(),
+    rawValues: z.partialRecord(MetricName, z.string()).optional(),
+    missing: z.partialRecord(MetricName, MissingReason).optional(),
+    transport: z.string().optional(),
+    runId: z.string().optional(),
+    rawRef: z.string().optional(),
+  })
+  .superRefine((o, ctx) => {
+    for (const key of Object.keys(o.missing ?? {})) {
+      if (key in o.metrics) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["missing", key],
+          message: `${key} is both a metric and missing`,
+        })
+      }
+    }
+    // A displayed value always belongs to a parsed number.
+    for (const key of Object.keys(o.rawValues ?? {})) {
+      if (!(key in o.metrics)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["rawValues", key],
+          message: `${key} has a raw value but no metric`,
+        })
+      }
+    }
+  })
 export type Observation = z.infer<typeof Observation>
 
 export const AudienceKind = z.enum(["followers", "karma", "subscribers"])
@@ -104,7 +129,7 @@ export type AudienceUnknownReason = z.infer<typeof AudienceUnknownReason>
 /** One reading of an audience figure. Either `value` is known or `unknown` says why not. */
 export const AudienceReading = z
   .object({
-    measuredAt: isoDate,
+    measuredAt: timestamp,
     kind: AudienceKind,
     value: z.number().nonnegative().optional(),
     rawValue: z.string().optional(),
@@ -120,38 +145,44 @@ export const Actor = z.object({
   displayName: z.string().optional(),
   handle: z.string().optional(),
   profileUrl: z.string().optional(),
-  accountCreatedAt: isoDate.optional(),
+  accountCreatedAt: dateOrTimestamp.optional(),
   verified: z.boolean().optional(),
   audience: z.array(AudienceReading).default([]),
 })
 export type Actor = z.infer<typeof Actor>
 
 export const PickupKind = z.enum(["media_pickup", "crosspost", "media_publication"])
+export type PickupKind = z.infer<typeof PickupKind>
 export const PickupMethod = z.enum(["link", "content_id", "near_text", "declared", "legacy_flag"])
 export type PickupMethod = z.infer<typeof PickupMethod>
 
 /** Methods whose evidence is exact, so the pickup counts as verified. */
 export const VERIFIED_PICKUP_METHODS: readonly PickupMethod[] = ["link", "content_id", "declared"]
 
-export const Pickup = z.object({
-  itemId: z.string().min(1),
-  kind: PickupKind,
-  pickupItemId: z.string().optional(),
-  pickupUrl: z.string().optional(),
-  outlet: z.string().optional(),
-  relation: z.enum(["republication", "citation"]),
-  evidence: z.object({
-    outboundLink: z.string().optional(),
-    excerpt: z.string().optional(),
-    similarity: z.number().min(0).max(1).optional(),
-    rawRef: z.string().optional(),
-  }),
-  method: PickupMethod,
-  verified: z.boolean(),
-  firstSeenAt: isoDate,
-  measuredAt: isoDate,
-  runId: z.string().optional(),
-})
+export const Pickup = z
+  .object({
+    itemId: z.string().min(1),
+    kind: PickupKind,
+    pickupItemId: z.string().optional(),
+    pickupUrl: z.string().optional(),
+    outlet: z.string().optional(),
+    relation: z.enum(["republication", "citation"]),
+    evidence: z.object({
+      outboundLink: z.string().optional(),
+      excerpt: z.string().optional(),
+      similarity: z.number().min(0).max(1).optional(),
+      rawRef: z.string().optional(),
+    }),
+    method: PickupMethod,
+    verified: z.boolean(),
+    firstSeenAt: timestamp,
+    measuredAt: timestamp,
+    runId: z.string().optional(),
+  })
+  .refine((p) => p.verified === VERIFIED_PICKUP_METHODS.includes(p.method), {
+    message: "verified must be true exactly for link, content_id and declared methods",
+    path: ["verified"],
+  })
 export type Pickup = z.infer<typeof Pickup>
 
 export const Recipe = z.object({
@@ -161,28 +192,47 @@ export const Recipe = z.object({
       z.object({
         connector: z.string().min(1),
         instance: z.string().optional(),
-        queries: z.array(z.object({ text: z.string().min(1), subject: z.string().optional() })).default([]),
+        queries: z
+          .array(
+            z.object({
+              text: z.string().min(1),
+              subject: z.string().optional(),
+            }),
+          )
+          .default([]),
         options: z.record(z.string(), z.unknown()).optional(),
       }),
     )
     .min(1),
-  window: z.object({ from: isoDate.optional(), to: isoDate.optional() }).optional(),
+  window: z.object({ from: timestamp.optional(), to: timestamp.optional() }).optional(),
   sampling: z
     .object({
       bands: z
-        .array(z.object({ metric: MetricName, min: z.number().optional(), max: z.number().optional() }))
+        .array(
+          z.object({
+            metric: MetricName,
+            min: z.number().optional(),
+            max: z.number().optional(),
+          }),
+        )
         .optional(),
       perDomainCap: z.number().int().positive().optional(),
       seed: z.number().int().optional(),
     })
     .optional(),
-  caps: z.object({ perConnector: z.number().int().positive().optional(), total: z.number().int().positive().optional() }).optional(),
+  caps: z
+    .object({
+      perConnector: z.number().int().positive().optional(),
+      total: z.number().int().positive().optional(),
+    })
+    .optional(),
   workers: z.number().int().positive().default(8),
   sinks: z.array(z.string()).optional(),
 })
 export type Recipe = z.infer<typeof Recipe>
 
 export const FailureCause = z.enum(["blocked", "empty", "network", "parse", "other"])
+export type FailureCause = z.infer<typeof FailureCause>
 
 export const ConnectorReport = z.object({
   connector: z.string().min(1),
@@ -198,11 +248,20 @@ export const ConnectorReport = z.object({
   observations: z.number().int().nonnegative(),
   duplicates: z.number().int().nonnegative(),
   failures: z.partialRecord(FailureCause, z.number().int().nonnegative()).default({}),
-  escalations: z.array(z.object({ from: z.string(), to: z.string(), count: z.number().int().positive() })).default([]),
+  escalations: z
+    .array(
+      z.object({
+        from: z.string(),
+        to: z.string(),
+        count: z.number().int().positive(),
+      }),
+    )
+    .default([]),
   durationMs: z.number().nonnegative(),
 })
 export type ConnectorReport = z.infer<typeof ConnectorReport>
 
+/** Every `with*` field and `eligible` is a count of items; shares are computed by the reader. */
 export const CoverageCell = z.object({
   platform: z.string(),
   format: z.string(),
@@ -227,8 +286,8 @@ export type Coverage = z.infer<typeof Coverage>
 
 export const RunReport = z.object({
   runId: z.string().min(1),
-  startedAt: isoDate,
-  finishedAt: isoDate.optional(),
+  startedAt: timestamp,
+  finishedAt: timestamp.optional(),
   connectors: z.array(ConnectorReport),
   coverage: Coverage.optional(),
 })

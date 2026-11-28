@@ -4,7 +4,7 @@ import { canonicalUrl, itemId, itemIdFromUrl, normalizeText, textFingerprint } f
 describe("canonicalUrl", () => {
   it("drops tracking params, keeps real ones sorted", () => {
     expect(canonicalUrl("https://Example.com/a?utm_source=x&b=2&fbclid=z&a=1&gclid=q&ref=hn&si=9")).toBe(
-      "https://example.com/a?a=1&b=2",
+      "https://example.com/a?a=1&b=2&ref=hn",
     )
   })
   it("drops mailing and social tracking ids", () => {
@@ -29,6 +29,21 @@ describe("canonicalUrl", () => {
   it("is idempotent", () => {
     const once = canonicalUrl("HTTPS://Example.com:443/a/?utm_medium=m&z=1&y=2#f")
     expect(canonicalUrl(once)).toBe(once)
+  })
+  it("keeps ref (it can carry meaning) but drops ref_src and ref_url", () => {
+    expect(canonicalUrl("https://example.com/tree?ref=main&ref_src=tw&ref_url=u")).toBe("https://example.com/tree?ref=main")
+  })
+  it("lowercases scheme and host only, never the path", () => {
+    expect(canonicalUrl("HTTPS://Example.COM/Some/Mixed/Path?Q=Val")).toBe("https://example.com/Some/Mixed/Path?Q=Val")
+  })
+  it("normalises IDN hosts to punycode", () => {
+    expect(canonicalUrl("https://BÜCHER.example/a")).toBe("https://xn--bcher-kva.example/a")
+  })
+  it("strips an explicit :80 on http", () => {
+    expect(canonicalUrl("http://example.com:80/a")).toBe("http://example.com/a")
+  })
+  it("ignores parameter order", () => {
+    expect(canonicalUrl("https://example.com/a?b=2&a=1")).toBe(canonicalUrl("https://example.com/a?a=1&b=2"))
   })
   it("returns non-URLs trimmed", () => {
     expect(canonicalUrl("  not a url ")).toBe("not a url")

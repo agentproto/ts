@@ -27,13 +27,13 @@ describe("schemas", () => {
       links: { target: "web:def" },
     })
     expect(ok.success).toBe(true)
-    expect(CollectItem.safeParse({ id: "a", source: "s", kind: "tweet", firstSeenAt: "t" }).success).toBe(false)
+    expect(CollectItem.safeParse({ id: "a", source: "s", kind: "tweet", firstSeenAt: "2026-11-28T10:00:00Z" }).success).toBe(false)
     expect(
       CollectItem.safeParse({
         id: "a",
         source: "s",
         kind: "post",
-        firstSeenAt: "t",
+        firstSeenAt: "2026-11-28T10:00:00Z",
         subjects: [{ label: "x", provenance: "guess" }],
       }).success,
     ).toBe(false)
@@ -44,14 +44,15 @@ describe("schemas", () => {
       itemId: "x:1",
       measuredAt: "2026-01-01T00:00:00Z",
       metrics: { likes: 3 },
-      rawValues: { views: "873.4K" },
+      rawValues: { likes: "3" },
       missing: { reposts: "not_exposed" },
     })
     expect(obs.metrics.likes).toBe(3)
     expect("reposts" in obs.metrics).toBe(false)
     expect(obs.metrics.views).toBeUndefined()
-    expect(Observation.parse({ itemId: "x:1", measuredAt: "t" }).metrics).toEqual({})
-    expect(Observation.safeParse({ itemId: "x:1", measuredAt: "t", missing: { likes: "zero" } }).success).toBe(false)
+    expect(obs.missing?.reposts).toBe("not_exposed")
+    expect(Observation.parse({ itemId: "x:1", measuredAt: "2026-11-28T10:00:00Z" }).metrics).toEqual({})
+    expect(Observation.safeParse({ itemId: "x:1", measuredAt: "2026-11-28T10:00:00Z", missing: { likes: "zero" } }).success).toBe(false)
   })
 
   it("records unknown audience with a reason, never as zero", () => {
@@ -59,20 +60,20 @@ describe("schemas", () => {
     expect(Actor.parse(base).audience).toEqual([])
     const unknown = Actor.safeParse({
       ...base,
-      audience: [{ measuredAt: "t", kind: "followers", unknown: "not_fetched" }],
+      audience: [{ measuredAt: "2026-11-28T10:00:00Z", kind: "followers", unknown: "not_fetched" }],
     })
     expect(unknown.success).toBe(true)
     const known = Actor.safeParse({
       ...base,
-      audience: [{ measuredAt: "t", kind: "karma", value: 120 }],
+      audience: [{ measuredAt: "2026-11-28T10:00:00Z", kind: "karma", value: 120 }],
     })
     expect(known.success).toBe(true)
-    expect(Actor.safeParse({ ...base, audience: [{ measuredAt: "t", kind: "followers" }] }).success).toBe(false)
+    expect(Actor.safeParse({ ...base, audience: [{ measuredAt: "2026-11-28T10:00:00Z", kind: "followers" }] }).success).toBe(false)
     expect(
-      Actor.safeParse({ ...base, audience: [{ measuredAt: "t", kind: "followers", value: 0, unknown: "blocked" }] })
+      Actor.safeParse({ ...base, audience: [{ measuredAt: "2026-11-28T10:00:00Z", kind: "followers", value: 0, unknown: "blocked" }] })
         .success,
     ).toBe(false)
-    expect(Actor.safeParse({ ...base, audience: [{ measuredAt: "t", kind: "fans", value: 1 }] }).success).toBe(false)
+    expect(Actor.safeParse({ ...base, audience: [{ measuredAt: "2026-11-28T10:00:00Z", kind: "fans", value: 1 }] }).success).toBe(false)
   })
 
   it("validates pickups", () => {
@@ -84,8 +85,8 @@ describe("schemas", () => {
       evidence: { outboundLink: "https://example.com/a" },
       method: "link",
       verified: true,
-      firstSeenAt: "t",
-      measuredAt: "t",
+      firstSeenAt: "2026-11-28T10:00:00Z",
+      measuredAt: "2026-11-28T10:00:00Z",
     }
     expect(Pickup.safeParse(pickup).success).toBe(true)
     expect(Pickup.safeParse({ ...pickup, method: "guess" }).success).toBe(false)
@@ -116,7 +117,7 @@ describe("schemas", () => {
     expect(Coverage.safeParse({ cells: [{ ...cell, items: -1 }] }).success).toBe(false)
     const report = RunReport.parse({
       runId: "r1",
-      startedAt: "t",
+      startedAt: "2026-11-28T10:00:00Z",
       connectors: [
         {
           connector: "web",
@@ -132,5 +133,52 @@ describe("schemas", () => {
       coverage: { cells: [cell] },
     })
     expect(report.connectors[0]?.status).toBe("ok")
+  })
+
+  it("requires full timestamps for measuredAt and firstSeenAt, allows a day for publishedAt", () => {
+    expect(Observation.safeParse({ itemId: "x:1", measuredAt: "2026-11-28" }).success).toBe(false)
+    expect(Observation.safeParse({ itemId: "x:1", measuredAt: "2026-11-28T10:00:00+01:00" }).success).toBe(true)
+    expect(
+      Actor.safeParse({ ref: "x:@h", audience: [{ measuredAt: "2026-11-28", kind: "followers", value: 1 }] }).success,
+    ).toBe(false)
+    const base = { id: "web:a", source: "web", kind: "article", firstSeenAt: "2026-11-28T10:00:00Z" }
+    expect(CollectItem.safeParse({ ...base, firstSeenAt: "2026-11-28" }).success).toBe(false)
+    expect(CollectItem.safeParse({ ...base, publishedAt: "2026-11-28" }).success).toBe(true)
+    expect(CollectItem.safeParse({ ...base, postedAt: "2026-11-28T10:00:00Z" }).success).toBe(true)
+    expect(CollectItem.safeParse({ ...base, publishedAt: "yesterday" }).success).toBe(false)
+    expect(Actor.safeParse({ ref: "x:@h", accountCreatedAt: "2020-01-02" }).success).toBe(true)
+    expect(Actor.safeParse({ ref: "x:@h", accountCreatedAt: "soon" }).success).toBe(false)
+  })
+
+  it("keeps Pickup.verified consistent with its method", () => {
+    const base = {
+      itemId: "web:a",
+      kind: "media_pickup",
+      relation: "citation",
+      evidence: {},
+      firstSeenAt: "2026-11-28T10:00:00Z",
+      measuredAt: "2026-11-28T10:00:00Z",
+    }
+    for (const method of ["link", "content_id", "declared"]) {
+      expect(Pickup.safeParse({ ...base, method, verified: true }).success).toBe(true)
+      expect(Pickup.safeParse({ ...base, method, verified: false }).success).toBe(false)
+    }
+    for (const method of ["near_text", "legacy_flag"]) {
+      expect(Pickup.safeParse({ ...base, method, verified: false }).success).toBe(true)
+      expect(Pickup.safeParse({ ...base, method, verified: true }).success).toBe(false)
+    }
+  })
+
+  it("rejects a counter that is both measured and missing, and a raw value without a metric", () => {
+    const at = "2026-11-28T10:00:00Z"
+    expect(
+      Observation.safeParse({ itemId: "x:1", measuredAt: at, metrics: { likes: 1 }, missing: { likes: "hidden" } })
+        .success,
+    ).toBe(false)
+    expect(
+      Observation.safeParse({ itemId: "x:1", measuredAt: at, metrics: { views: 873400 }, rawValues: { views: "873.4K" } })
+        .success,
+    ).toBe(true)
+    expect(Observation.safeParse({ itemId: "x:1", measuredAt: at, rawValues: { views: "873.4K" } }).success).toBe(false)
   })
 })
