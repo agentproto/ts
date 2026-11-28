@@ -312,7 +312,11 @@ class DiskStore implements CollectStore {
   /**
    * Replace the in-memory seen set with the content of `seen.idx`, streamed.
    * A last line without a newline is a torn append: it is ignored, and when we
-   * hold the lock the file is rewritten without it.
+   * hold the lock the file is rewritten without it. This differs on purpose from
+   * the JSONL logs, where a torn line is skipped on read and closed with a
+   * newline on append: a half-written key is a valid but wrong key, so it must
+   * never count as seen. The cost is that a key whose only missing byte was the
+   * newline is forgotten and may be added again (a spurious re-fetch, no corruption).
    */
   async reloadSeen(): Promise<void> {
     await this.enqueue(async () => {
