@@ -1,5 +1,15 @@
 # @agentproto/adapter-mastra-agent
 
+## 0.8.7
+
+### Patch Changes
+
+- Updated dependencies [724c77c]
+- Updated dependencies [ad0fe72]
+- Updated dependencies [72e4161]
+  - @agentproto/harness@4.4.0
+  - @agentproto/runtime@6.8.1
+
 ## 0.8.6
 
 ### Patch Changes

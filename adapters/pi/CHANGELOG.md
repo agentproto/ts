@@ -1,5 +1,13 @@
 # @agentproto/adapter-pi
 
+## 0.8.6
+
+### Patch Changes
+
+- Updated dependencies [724c77c]
+- Updated dependencies [ad0fe72]
+  - @agentproto/harness@4.4.0
+
 ## 0.8.5
 
 ### Patch Changes

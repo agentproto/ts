@@ -1,5 +1,12 @@
 # @agentproto/adapter-browser
 
+## 0.9.6
+
+### Patch Changes
+
+- Updated dependencies [162cde1]
+  - @agentproto/adapter-browser-chrome@0.8.6
+
 ## 0.9.5
 
 ### Patch Changes

@@ -1,5 +1,13 @@
 # @agentproto/adapter-mastracode
 
+## 0.4.14
+
+### Patch Changes
+
+- Updated dependencies [724c77c]
+- Updated dependencies [ad0fe72]
+  - @agentproto/harness@4.4.0
+
 ## 0.4.13
 
 ### Patch Changes

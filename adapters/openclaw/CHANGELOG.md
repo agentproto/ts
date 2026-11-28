@@ -1,5 +1,13 @@
 # @agentproto/adapter-openclaw
 
+## 0.1.47
+
+### Patch Changes
+
+- Updated dependencies [724c77c]
+- Updated dependencies [ad0fe72]
+  - @agentproto/harness@4.4.0
+
 ## 0.1.46
 
 ### Patch Changes

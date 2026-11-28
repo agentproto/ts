@@ -1,5 +1,17 @@
 # @agentproto/runtime
 
+## 6.8.1
+
+### Patch Changes
+
+- ad0fe72: Harness manifests gain an optional `deprecated: { replacedBy, message }` field. A spawn of a deprecated harness still runs and returns a warning naming the replacement. The `gemini` harness declares it, pointing to `antigravity`: only the Gemini CLI harness is deprecated, and Gemini models stay available through antigravity.
+- 72e4161: Worktrees no longer fill the disk with per-worktree pnpm copies. Setup hooks now run against one pnpm store per worktrees pool (`<root>/<repo>/.pnpm-store`, same volume as the worktrees; override with `AGENTPROTO_WORKTREES_PNPM_STORE_DIR`) with `package-import-method=clone-or-copy`, so packages are cloned instead of copied. Removing a worktree also deletes its own out-of-tree pnpm virtual store (only a real directory named like the worktree that looks like a pnpm virtual store and holds no `.git`), and can prune the shared store in the background (opt-in: `AGENTPROTO_WORKTREES_PNPM_STORE_PRUNE=1`). `worktree new` warns when `worktrees.root` is on a nearly full system disk, and the `worktrees.root` help and the worktree README document how to move it.
+- Updated dependencies [724c77c]
+- Updated dependencies [ad0fe72]
+  - @agentproto/harness@4.4.0
+  - @agentproto/adapter-browser@0.9.6
+  - @agentproto/sandbox@1.0.5
+
 ## 6.8.0
 
 ### Minor Changes
