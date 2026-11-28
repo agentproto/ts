@@ -8741,6 +8741,12 @@ export async function bootSandboxAgentSession(opts: {
       return cancelBoot()
     }
     boxSpawnEnforcedPostures = boxSpawnEnforcedPosturesOf(remoteDesc)
+    // The box resolves its own harness, so its spawn warnings carry the
+    // manifest deprecation for the harness that actually ran.
+    const remoteWarnings = (remoteDesc as { warnings?: unknown }).warnings
+    if (Array.isArray(remoteWarnings)) {
+      bootWarnings.push(...remoteWarnings.filter((warning): warning is string => typeof warning === "string"))
+    }
     // The box reports `resumeVia` only when its own adapter actually
     // rehydrated the requested conversation (`resumeSessionId` above) —
     // surfaced on the boot result so the caller can keep the host
