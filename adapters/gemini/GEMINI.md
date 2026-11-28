@@ -59,6 +59,11 @@ tags: ["gemini", "google", "acp", "agent-runtime", "coding"]
 > `antigravity` harness (`@agentproto/adapter-antigravity`, `agy acp`). A
 > `gemini` launch can fail with "client not supported"; this adapter is kept only
 > so existing setups keep resolving.
+>
+> Only the Gemini CLI *harness* is deprecated; Gemini models remain usable
+> through antigravity: `agent_start({ harness: "antigravity", model: "<slug from
+> agy models>" })`. A `gemini` launch still runs where it works, with a
+> deprecation warning.
 
 # Gemini adapter
 

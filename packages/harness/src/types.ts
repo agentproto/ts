@@ -1045,6 +1045,11 @@ export interface AgentCliDefinition {
   requires?: AgentCliRequires
   examples?: AgentCliExample[]
   tags?: string[]
+  /**
+   * Marks this harness as deprecated. A launch still works; the spawn
+   * surfaces a warning naming `replacedBy` (a harness id) and `message`.
+   */
+  deprecated?: { replacedBy: string; message?: string }
   metadata?: Record<string, unknown>
 }
 

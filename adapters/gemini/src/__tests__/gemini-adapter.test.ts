@@ -73,3 +73,11 @@ describe("gemini manifest", () => {
     expect(gemini.models?.bin_args_template).toEqual(["-m", "{model}"])
   })
 })
+
+describe("gemini deprecation", () => {
+  it("declares antigravity as its replacement", async () => {
+    const { gemini } = await import("../index.js")
+    expect(gemini.deprecated?.replacedBy).toBe("antigravity")
+    expect(gemini.deprecated?.message).toContain("Gemini models stay available")
+  })
+})
