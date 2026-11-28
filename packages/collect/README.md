@@ -37,9 +37,11 @@ filesystem (Node built-ins only).
   order), and parses stored raws. 401/403/429, an empty body or a thrown
   `blocked`/`empty` error moves a task to the next transport (the report
   records the escalation); other statuses are `http` failures with no
-  fallback. A challenge page is a hard stop: the raw is kept, there is no
-  fallback, no new request is started for the connector for the rest of the run (requests
-  already in flight finish) and its queued tasks are `skipped` with reason
+  fallback. A verification (challenge) page seen by `http` or `api` moves the
+  task to the next transport too, and fails it with cause `challenge` when none
+  remains. A challenge seen by the `browser` is a hard stop: the raw is kept,
+  there is no fallback, no new request is started for the connector for the
+  rest of the run (requests already in flight are aborted) and its queued tasks are `skipped` with reason
   `challenge`.
   The whole root plan is written first in one atomic `plan.jsonl`. The engine
   stores every raw, parses and validates every raw of a task before writing
@@ -48,7 +50,11 @@ filesystem (Node built-ins only).
   owner), writes, then marks the task `done` with its counters. Observations
   and pickups carry `runId` and `taskId`, so a task redone after a crash does
   not double-count (readers drop the identical copy). A connector with no usable
-  transport or a missing secret is `skipped` and the run goes on.
+  transport is `skipped` and the run goes on. A transport that throws
+  `MissingSecretError` hands the task to the next declared transport; when none
+  remains the task is `skipped` with reason `missing_secret:<NAME>` (the
+  secret's name only) and a connector whose tasks were all skipped that way is
+  reported `skipped`.
   Scheduling: a bounded pool (`recipe.workers`, default 8) for api/http
   attempts and a browser lane of one; each attempt is queued in the lane of its
   own transport, so a fallback moves the task between lanes. Every request goes
@@ -190,23 +196,37 @@ const collector = createCollector({ store, transports: { http, api }, connectors
   exponential backoff and jitter (`baseDelayMs`, `maxBackoffMs`; `random` and
   `clock` are injectable). POST and PATCH are not retried unless
   `retryUnsafeMethods`.
-- **`Retry-After`** (seconds or HTTP date) replaces the backoff on 429 and 503.
-  Above `maxRetryAfterMs` (default 30 s) the request gives up at once with
-  cause `http` and status 429 (or 503), which the engine treats as a fallback.
+- **`Retry-After`** replaces the backoff on 429 and 503. It is a
+  non-negative integer number of seconds or an HTTP date (IMF-fixdate, RFC 850
+  or asctime); anything else is ignored. Above `maxRetryAfterMs` (default
+  30 s) the request gives up at once with cause `http` and the response status.
+  Only a 429 then falls back to the next transport; a 503 is a final `http`
+  failure.
 - **Redirects** are followed by hand (at most `maxRedirects`); `url` in the
-  response is the final one. Credential headers are dropped when a hop
-  changes origin.
+  response is the final one. `Authorization`, `Cookie`, `Proxy-Authorization`
+  and the credential headers set by `createApiTransport` are dropped when a
+  hop changes origin; a request whose credential is in the URL (query
+  authentication) refuses such a hop with a `blocked` error. A redirect that
+  turns a POST into a GET drops the body and its `Content-*` headers.
 - **User-Agent** is `agentproto-collect` unless you set `userAgent` or a request header.
 - **Size cap** (`maxBytes`, default 10 MiB): a 2xx body over the cap, declared
   or streamed, aborts the transfer with cause `http` and the response status
   (not retried, no fallback: a bigger page is not a transport problem). A
   non-2xx body is truncated to the cap instead.
-- **Per-host limiter** (`minIntervalMs`, default 1000, 0 turns it off). The
-  engine already gates every host by the connector's `pace.delayMs`, and that
-  gate runs first, so with both on the waits overlap instead of adding up (the
-  transport only waits for what is left of its own interval). Inside the
-  engine, set `minIntervalMs: 0` and let the connector pace; standalone, keep
-  the default.
+- **Limiter** (`minIntervalMs`, default 1000, 0 turns it off): one pacing
+  point at the send boundary. It paces the first send, every retry and every
+  redirect hop to the same host, and a wait in its queue ends when the request
+  is aborted. The engine gates the start of each task by the connector's
+  `pace.delayMs`, so the first send of a task is paced by both; the two
+  overlap (the later deadline wins) and do not add up. Retries and redirect
+  hops never go back through the engine, so only this limiter paces them, even
+  inside the engine: set `minIntervalMs` to the gap you want between those
+  extra sends (0 leaves them unpaced). Used alone, keep the default.
+- **Error responses**: once the headers arrived, the status and `Retry-After`
+  are kept; a body that stalls or resets is cut short and the response still
+  classifies by status. A cancellation by the caller always wins.
+- Options are validated: a non-finite, negative or out-of-range value throws a
+  `RangeError`.
 
 Errors are always `TransportError`, with the failed body and extension kept
 for the raw store:
@@ -215,23 +235,30 @@ for the raw store:
 |---|---|---|
 | 401, 403 | `blocked` | falls back |
 | 429 (retries used up or `Retry-After` too long) | `http`, status 429 | falls back |
-| verification page | `challenge` | stops the connector |
+| 503 (same) and other 5xx | `http`, status 5xx | final |
+| verification page | `challenge` | falls back; stops the connector only when the browser met it |
 | 2xx with no body | `empty` | falls back |
 | DNS, reset, TLS, timeout, abort | `network` | no fallback |
 | other 4xx, 5xx after retries, size cap | `http` | final |
 
-A page is a verification page when it carries `cf-mitigated: challenge`, or
-when its HTML (first 64 KiB) matches one of a short list of generic markers
-(titles such as "Just a moment" or "Attention required", "verify you are
-human", widget names such as reCAPTCHA, hCaptcha or Turnstile) and the status
-is 403, 429 or 503, or the status is 2xx and the page is under 50 KiB. Long
-pages and non-HTML content types are never flagged. The markers are
-heuristics: a page they miss is stored as a normal response.
+A response is a verification page only with real evidence: the header
+`cf-mitigated: challenge`; or a status of 403, 429 or 503 together with an
+interstitial marker in the first 64 KiB of HTML (titles such as "Just a
+moment" or "Attention required", "verify you are human", "checking your
+browser", or a verification widget such as reCAPTCHA, hCaptcha or Turnstile);
+or a page that is nothing but the interstitial (under 4 KiB, a marker or
+widget, under 120 characters of visible text). A normal page that embeds a
+widget or quotes a verification phrase is content, and non-HTML content types
+are never flagged. These are heuristics: a page they miss is stored as a
+normal response.
 
 `createApiTransport({ http, secrets, auth })` adds the secret on every request:
 `{ type: "bearer" | "header" | "query" }` (`name` for header and query,
 `prefix` for header). A missing or empty secret throws `MissingSecretError`
-before any request and the engine records the task as `skipped`. The secret
-value never leaves the transport: error messages, urls and bodies are rebuilt
-with it replaced by `[redacted]`, a query-parameter secret is removed from the
-returned `url`, and the underlying error object is dropped.
+before any request; the engine tries the next declared transport, else skips
+the task with `missing_secret:<NAME>`. The secret value never leaves the
+transport: every occurrence (raw, percent-encoded and form-encoded) is
+replaced by `[redacted]` in the body bytes and headers of successful
+responses, and in the message, url and body of errors; a query-parameter
+secret is removed from the returned `url`, and the underlying error object is
+dropped.

@@ -27,12 +27,15 @@ const REDACTED = "[redacted]"
  * `api` transport: adds the auth header (or query parameter) read from the
  * `SecretsPort` on every request, then delegates to `http`.
  *
+ * - A query-parameter secret marks the request `urlCredential`: the HTTP
+ *   transport refuses a redirect to another origin.
  * - A missing or empty secret throws `MissingSecretError` before any request;
  *   the engine records the task as `skipped`.
- * - The secret value never leaves this function: errors and responses are
- *   rebuilt with the value replaced by `[redacted]` in the message, URL and
- *   body, the underlying error object is dropped, and a query-parameter secret
- *   is removed from the returned `url`.
+ * - The secret value never leaves this function. Successful responses and
+ *   errors are rebuilt with every occurrence of the value (raw, percent-encoded
+ *   and form-encoded) replaced by `[redacted]` in the body bytes, the response
+ *   headers, the message and the URL; the underlying error object is dropped
+ *   and a query-parameter secret is removed from the returned `url`.
  * - A header secret is marked as a credential header, so the HTTP transport
  *   drops it if a redirect leaves the origin.
  */
@@ -56,8 +59,13 @@ export function createApiTransport(options: ApiTransportOptions): HttpTransport 
         credentialHeaders.push(name.toLowerCase())
       }
       try {
-        const res = await http.request({ ...req, url, headers, credentialHeaders })
-        return { ...res, url: clean(res.url, auth, secret) }
+        const res = await http.request({ ...req, url, headers, credentialHeaders, urlCredential: req.urlCredential || auth.type === "query" })
+        return {
+          ...res,
+          url: clean(res.url, auth, secret),
+          headers: Object.fromEntries(Object.entries(res.headers).map(([k, v]) => [k, scrub(v, secret)])),
+          body: redactBytes(res.body, secret),
+        }
       } catch (e) {
         throw redactError(e, auth, secret)
       }
@@ -87,15 +95,45 @@ function scrub(text: string, secret: string): string {
   return out
 }
 
+/** Byte-level replace, so a binary body is not corrupted by a text round trip. */
+function redactBytes(bytes: Uint8Array, secret: string): Uint8Array {
+  const enc = new TextEncoder()
+  const forms = [...new Set([secret, encodeURIComponent(secret), new URLSearchParams({ k: secret }).toString().slice(2)])].map((f) => enc.encode(f))
+  const marker = enc.encode(REDACTED)
+  let out = bytes
+  for (const needle of forms) {
+    const parts: Uint8Array[] = []
+    let from = 0
+    for (let i = indexOf(out, needle, 0); i !== -1; i = indexOf(out, needle, from)) {
+      parts.push(out.subarray(from, i), marker)
+      from = i + needle.length
+    }
+    if (parts.length === 0) continue
+    parts.push(out.subarray(from))
+    const joined = new Uint8Array(parts.reduce((n, p) => n + p.length, 0))
+    let at = 0
+    for (const p of parts) {
+      joined.set(p, at)
+      at += p.length
+    }
+    out = joined
+  }
+  return out
+}
+
+function indexOf(hay: Uint8Array, needle: Uint8Array, from: number): number {
+  if (needle.length === 0) return -1
+  outer: for (let i = from; i <= hay.length - needle.length; i++) {
+    for (let j = 0; j < needle.length; j++) if (hay[i + j] !== needle[j]) continue outer
+    return i
+  }
+  return -1
+}
+
 function redactError(e: unknown, auth: ApiAuth, secret: string): unknown {
   if (e instanceof MissingSecretError) return e
   if (e instanceof TransportError) {
-    let body = e.body
-    if (body) {
-      const text = new TextDecoder().decode(body)
-      const clean = scrub(text, secret)
-      if (clean !== text) body = new TextEncoder().encode(clean)
-    }
+    const body = e.body ? redactBytes(e.body, secret) : undefined
     return new TransportError(e.cause, scrub(e.message, secret), {
       status: e.status,
       url: e.url === undefined ? undefined : clean(e.url, auth, secret),

@@ -71,6 +71,12 @@ export interface HttpRequest {
    * follows redirects drops them when a hop leaves the origin.
    */
   credentialHeaders?: string[]
+  /**
+   * The URL itself carries a credential (a query parameter). A transport that
+   * follows redirects refuses any hop that leaves the origin, with a `blocked`
+   * error.
+   */
+  urlCredential?: boolean
 }
 
 export interface HttpResponse {
