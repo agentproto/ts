@@ -1,5 +1,13 @@
 # @agentproto/adapter-claude-sdk
 
+## 0.7.41
+
+### Patch Changes
+
+- Updated dependencies [724c77c]
+- Updated dependencies [ad0fe72]
+  - @agentproto/harness@4.4.0
+
 ## 0.7.40
 
 ### Patch Changes

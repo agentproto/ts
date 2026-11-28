@@ -1,5 +1,14 @@
 # @agentproto/adapter-gemini
 
+## 0.3.8
+
+### Patch Changes
+
+- ad0fe72: Harness manifests gain an optional `deprecated: { replacedBy, message }` field. A spawn of a deprecated harness still runs and returns a warning naming the replacement. The `gemini` harness declares it, pointing to `antigravity`: only the Gemini CLI harness is deprecated, and Gemini models stay available through antigravity.
+- Updated dependencies [724c77c]
+- Updated dependencies [ad0fe72]
+  - @agentproto/harness@4.4.0
+
 ## 0.3.7
 
 ### Patch Changes
