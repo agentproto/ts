@@ -67,7 +67,7 @@ describe("chrome-live: attach to the user's running Chrome", () => {
 
     const driver = (await instance.attach({ initialUrl: "https://mail.example/inbox" })) as ChromeLiveDriver
     const create = f.commands.find((c) => c.method === "Target.createTarget")
-    expect(create?.params).toEqual({ url: "https://mail.example/inbox", newWindow: true })
+    expect(create?.params).toEqual({ url: "https://mail.example/inbox", newWindow: true, background: true })
     expect(f.commands.find((c) => c.method === "Target.attachToTarget")?.params).toEqual({ targetId: driver.target.id, flatten: true })
     expect(driver.kind).toBe("chrome-live")
     expect(driver.capabilities).toMatchObject({ isUserVisible: true, canMultiTarget: true })
@@ -94,10 +94,9 @@ describe("chrome-live: attach to the user's running Chrome", () => {
     expect(f.targets.get(second.target.id)?.windowId).toBe(agentWindow)
     expect(f.targets.get(third.target.id)?.windowId).toBe(agentWindow)
     for (const t of f.userTargets) expect(f.targets.get(t)?.windowId).toBe(1)
-    // Each extra tab focuses one of OUR tabs first so Chrome puts it in the agent window.
-    const activations = f.commands.filter((c) => c.method === "Target.activateTarget")
-    expect(activations).toHaveLength(2)
-    expect(activations.every((c) => c.params?.targetId === first.target.id)).toBe(true)
+    // Extra tabs are opened from one of OUR tabs: no target is ever activated, so no window takes the focus.
+    expect(f.commands.filter((c) => c.method === "Target.activateTarget")).toHaveLength(0)
+    expect(f.commands.filter((c) => c.method === "Target.createTarget").every((c) => c.params?.background === true)).toBe(true)
     expect(f.violations).toEqual([])
     await instance.stop()
   })
@@ -305,6 +304,9 @@ describe("chrome-live: attach to the user's running Chrome", () => {
     const second = await instance.attach()
     expect(f.targets.get(second.target.id)?.windowId).toBe([...f.targets.values()].find((t) => t.created)?.windowId)
     expect(f.commands.filter((c) => c.method === "Target.createTarget")).toHaveLength(2)
+    // The fallback creates in the background and never activates a target.
+    expect(f.commands.filter((c) => c.method === "Target.createTarget").every((c) => c.params?.background === true)).toBe(true)
+    expect(f.commands.filter((c) => c.method === "Target.activateTarget")).toHaveLength(0)
     await instance.stop()
   })
 

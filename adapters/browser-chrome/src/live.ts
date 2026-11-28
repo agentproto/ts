@@ -1148,7 +1148,7 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
   async function createTab(entry: LiveEntry, url: string): Promise<string> {
     if (entry.targets.size === 0) {
       // No agent window yet (or the user closed it): open a dedicated one.
-      const { targetId } = await entry.conn.send<{ targetId: string }>("Target.createTarget", { url, newWindow: true })
+      const { targetId } = await entry.conn.send<{ targetId: string }>("Target.createTarget", { url, newWindow: true, background: true })
       entry.targets.add(targetId)
       const windowId = await windowOf(entry, targetId)
       if (windowId !== undefined) entry.windowId = windowId
@@ -1170,11 +1170,11 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
         forget(entry, opened)
       }
     }
-    // Fallback: activate one of our tabs first so it becomes the agent window; the windowId check catches a race.
+    // Fallback: create the target in the background. Nothing is activated here: raising a tab would take the
+    // focus from whichever window the user (or another agent) is working in. The windowId check below catches
+    // a tab that landed in another window; it is closed again and the caller retries.
     for (let attempt = 0; attempt < 2; attempt++) {
-      const anchor = entry.targets.values().next().value as string
-      await entry.conn.send("Target.activateTarget", { targetId: anchor })
-      const { targetId } = await entry.conn.send<{ targetId: string }>("Target.createTarget", { url })
+      const { targetId } = await entry.conn.send<{ targetId: string }>("Target.createTarget", { url, background: true })
       entry.targets.add(targetId)
       if (entry.windowId === undefined) return targetId
       const windowId = await windowOf(entry, targetId)
