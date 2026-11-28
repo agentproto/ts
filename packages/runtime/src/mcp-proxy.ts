@@ -52,6 +52,7 @@ import {
   type ImportedMcpEntry,
 } from "./mcp-imports.js"
 import type { DiscoveredMcp } from "./mcp-discovery.js"
+import { matchesAnyToolPattern } from "./tool-name-pattern.js"
 
 interface ProxyClient {
   entry: ImportedMcpEntry
@@ -157,6 +158,13 @@ export interface McpProxyRegistryOptions {
   /** How long `listAliases` (mcp_imported_status) waits on a stale refresh
    *  before answering from the cache, so a hung server cannot block status. */
   statusRefreshTimeoutMs?: number
+}
+
+/** True when the import's source-side `allowTools` lets `name` through
+ *  (no list = unrestricted; an empty list = nothing). */
+function importAllows(entry: Pick<ImportedMcpEntry, "allowTools">, name: string): boolean {
+  if (!entry.allowTools) return true
+  return matchesAnyToolPattern(new Set(entry.allowTools), name)
 }
 
 export class McpProxyRegistry {
@@ -446,7 +454,7 @@ export class McpProxyRegistry {
         : c.lastError
           ? "error"
           : "pending",
-      toolCount: c.tools?.length ?? 0,
+      toolCount: c.tools?.filter(t => importAllows(c.entry, t.name)).length ?? 0,
       ...(c.lastError ? { lastError: c.lastError } : {}),
       ...(c.entry.resolve ? { resolve: c.entry.resolve } : {}),
       ...(c.stale ? { stale: c.stale } : {}),
@@ -465,7 +473,7 @@ export class McpProxyRegistry {
         error: handle.lastError ?? "client not connected",
       }
     }
-    return { ok: true, tools: handle.tools }
+    return { ok: true, tools: handle.tools.filter(t => importAllows(handle.entry, t.name)) }
   }
 
   async callTool(
@@ -474,6 +482,16 @@ export class McpProxyRegistry {
     args: unknown,
     context?: ProxyCallContext
   ): Promise<ProxyCallOutcome> {
+    // Source-side allow-list: checked before the guard and before any
+    // connection, so a refused tool never reaches the upstream.
+    await this.ensureCurrent()
+    const target = this.findByAlias(alias)
+    if (target && !importAllows(target.entry, toolName)) {
+      return {
+        ok: false,
+        error: `tool "${toolName}" is not available on import "${target.entry.alias}" (not in its allowTools)`,
+      }
+    }
     let callHeaders: Record<string, string> | undefined
     if (this.callGuard) {
       const verdict = await this.callGuard({ alias, toolName, args, ...(context ? { context } : {}) })

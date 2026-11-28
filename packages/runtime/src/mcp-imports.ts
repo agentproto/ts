@@ -80,6 +80,14 @@ export interface ImportedMcpEntry {
    *  and send it as `Agentproto-Subsession` instead of the bare caller header.
    *  Only meaningful when the server serves `POST /pair/subsessions`. */
   subsession?: "aip-59"
+  /** Source-side tool allow-list, enforced by `McpProxyRegistry` on EVERY
+   *  path to this import (`/mcp/imported/<id>`, `mcp_imported_tool_list`,
+   *  `mcp_imported_call`, app tool calls): a tool outside it is hidden from
+   *  `tools/list` and refused on `tools/call`, whatever the caller mounts.
+   *  Entries are exact names or `*` patterns (`list_*`). Absent = no
+   *  restriction; an empty array = no tool at all. A per-mount
+   *  `?allowTools=` can only narrow it further, never widen it. */
+  allowTools?: string[]
 }
 
 export interface ImportedMcpAuth {
@@ -276,7 +284,7 @@ export async function saveImportedMcps(
  */
 export function addImport(
   config: ImportedMcpsConfig,
-  input: { snapshot: DiscoveredMcp; alias?: string }
+  input: { snapshot: DiscoveredMcp; alias?: string; allowTools?: string[] }
 ): ImportedMcpsConfig {
   const alias = (input.alias ?? input.snapshot.name).trim()
   if (!alias) {
@@ -295,6 +303,11 @@ export function addImport(
     },
     resolve: deriveResolve(input.snapshot),
   }
+  // Re-importing an id must never silently drop a restriction: keep the
+  // existing allow-list unless the caller passes a new one.
+  const allowTools =
+    input.allowTools ?? config.imports.find(e => e.id === input.snapshot.id)?.allowTools
+  if (allowTools) next.allowTools = [...allowTools]
   const others = config.imports.filter(e => e.id !== input.snapshot.id)
   return { ...config, imports: [...others, next] }
 }
@@ -306,7 +319,7 @@ export function addImport(
  */
 export async function addImportWithSecrets(
   config: ImportedMcpsConfig,
-  input: { snapshot: DiscoveredMcp; alias?: string },
+  input: { snapshot: DiscoveredMcp; alias?: string; allowTools?: string[] },
   hooks: {
     storeMcpSecret?: (ref: string, value: string) => Promise<void>
     resolveMcpSecret?: (ref: string) => Promise<string | undefined>
@@ -362,6 +375,13 @@ function normalize(parsed: unknown): ImportedMcpsConfig {
       const auth = parseAuth(e.auth)
       if (auth) extra.auth = auth
       if (e.forwardCaller === true) extra.forwardCaller = true
+      // An allow-list that is present but malformed must fail CLOSED (no
+      // tool), never open: a non-array is treated as an empty list.
+      if (e.allowTools !== undefined) {
+        extra.allowTools = Array.isArray(e.allowTools)
+          ? e.allowTools.filter((t): t is string => typeof t === "string" && t.length > 0)
+          : []
+      }
       if (e.subsession !== undefined) {
         if (e.subsession === "aip-59" && snapshot.type === "http") {
           extra.subsession = "aip-59"
