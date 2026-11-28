@@ -21,7 +21,6 @@ const TRACKING_PARAMS = new Set([
   "ref_src",
   "ref_url",
   "igshid",
-  "si",
   "_hsenc",
   "_hsmi",
   "mkt_tok",
@@ -32,8 +31,17 @@ const DEFAULT_PORTS: Record<string, string> = {
   "https:": "443",
 }
 
-function isTrackingParam(name: string): boolean {
+/** `si` is a share-tracking parameter on these hosts only; elsewhere it can carry meaning. */
+const YOUTUBE_HOSTS = new Set(["youtube.com", "youtu.be"])
+
+function isYoutubeHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^(www|m|music)\./, "")
+  return YOUTUBE_HOSTS.has(host)
+}
+
+function isTrackingParam(name: string, hostname: string): boolean {
   const key = name.toLowerCase()
+  if (key === "si") return isYoutubeHost(hostname)
   return key.startsWith("utm_") || TRACKING_PARAMS.has(key)
 }
 
@@ -42,7 +50,8 @@ function isTrackingParam(name: string): boolean {
  * keeps its case), no credentials, no fragment, no default port, tracking
  * parameters removed, remaining parameters ordered by key only (the relative
  * order of a repeated key is kept, so `?a=2&a=1` differs from `?a=1&a=2`), no
- * trailing slash (root included, so `/a/` and `/a` are the same key).
+ * trailing slash (root included, so `/a/` and `/a` are the same key, and
+ * `https://example.com/?a=1` becomes `https://example.com?a=1`).
  *
  * The result is only a key for deduplication: the original URL is always
  * kept next to it. Callers pass the final URL; redirects are not followed
@@ -67,7 +76,7 @@ export function canonicalUrl(input: string): string {
 
   const kept: Array<[string, string]> = []
   url.searchParams.forEach((value, name) => {
-    if (!isTrackingParam(name)) kept.push([name, value])
+    if (!isTrackingParam(name, url.hostname)) kept.push([name, value])
   })
   // Array.prototype.sort is stable: equal keys keep their original order.
   kept.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))

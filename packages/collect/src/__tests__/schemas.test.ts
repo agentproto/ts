@@ -1,5 +1,17 @@
+import { z } from "zod"
 import { describe, expect, it } from "vitest"
-import { Actor, CollectItem, Coverage, Observation, Pickup, Recipe, RunReport, STORE_SCHEMA_VERSION } from "../index"
+import {
+  Actor,
+  ObservationBase,
+  PickupBase,
+  CollectItem,
+  Coverage,
+  Observation,
+  Pickup,
+  Recipe,
+  RunReport,
+  STORE_SCHEMA_VERSION,
+} from "../index"
 
 describe("schemas", () => {
   it("exposes a store schema version", () => {
@@ -202,6 +214,18 @@ describe("schemas", () => {
     expect(Pickup.safeParse({ ...declared, evidence: { excerpt: "q" } }).success).toBe(true)
     expect(Pickup.safeParse({ ...declared, evidence: { outboundLink: "https://example.com/a" } }).success).toBe(true)
     expect(Pickup.safeParse({ ...declared, evidence: {}, outlet: "example.com" }).success).toBe(true)
+  })
+
+  it("exposes unrefined bases that can be extended", () => {
+    const extended = ObservationBase.extend({ note: z.string() })
+    expect(extended.safeParse({ itemId: "x:1", measuredAt: "2026-11-28T10:00:00Z", note: "n" }).success).toBe(true)
+    expect(PickupBase.pick({ itemId: true }).safeParse({ itemId: "web:a" }).success).toBe(true)
+  })
+
+  it("accepts a bare day for postedAt", () => {
+    const base = { id: "x:1", source: "x", kind: "post", firstSeenAt: "2026-11-28T10:00:00Z" }
+    expect(CollectItem.safeParse({ ...base, postedAt: "2026-11-27" }).success).toBe(true)
+    expect(CollectItem.safeParse({ ...base, postedAt: "27/11/2026" }).success).toBe(false)
   })
 
   it("requires a subject label on recipe queries", () => {

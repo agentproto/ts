@@ -45,6 +45,7 @@ export const ItemPart = z.object({
   id: z.string().min(1),
   text: z.string(),
   authorRef: z.string().optional(),
+  // A bare day is accepted: some platforms only display the date of a post.
   postedAt: dateOrTimestamp.optional(),
 })
 export type ItemPart = z.infer<typeof ItemPart>
@@ -68,6 +69,7 @@ export const CollectItem = z.object({
   authorRef: z.string().optional(),
   submitterRef: z.string().optional(),
   publishedAt: dateOrTimestamp.optional(),
+  // A bare day is accepted: some platforms only display the date of a post.
   postedAt: dateOrTimestamp.optional(),
   firstSeenAt: timestamp,
   links: ItemLinks.optional(),
@@ -85,39 +87,40 @@ export type CollectItem = z.infer<typeof CollectItem>
 /** A counter is a number or absent. Absent is never read as zero: see `missing`. */
 const metricValues = z.partialRecord(MetricName, z.number())
 
-export const Observation = z
-  .object({
-    itemId: z.string().min(1),
-    measuredAt: timestamp,
-    metrics: metricValues.default({}),
-    partMetrics: z.record(z.string(), metricValues).optional(),
-    rawValues: z.partialRecord(MetricName, z.string()).optional(),
-    missing: z.partialRecord(MetricName, MissingReason).optional(),
-    transport: z.string().optional(),
-    runId: z.string().optional(),
-    rawRef: z.string().optional(),
-  })
-  .superRefine((o, ctx) => {
-    for (const key of Object.keys(o.missing ?? {})) {
-      if (key in o.metrics) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["missing", key],
-          message: `${key} is both a metric and missing`,
-        })
-      }
+export const ObservationBase = z.object({
+  itemId: z.string().min(1),
+  measuredAt: timestamp,
+  metrics: metricValues.default({}),
+  partMetrics: z.record(z.string(), metricValues).optional(),
+  rawValues: z.partialRecord(MetricName, z.string()).optional(),
+  missing: z.partialRecord(MetricName, MissingReason).optional(),
+  transport: z.string().optional(),
+  runId: z.string().optional(),
+  rawRef: z.string().optional(),
+})
+
+/** Unrefined shape of `Observation`, for consumers that need `.extend()`, `.pick()` or `.partial()`. */
+export const Observation = ObservationBase.superRefine((o, ctx) => {
+  for (const key of Object.keys(o.missing ?? {})) {
+    if (key in o.metrics) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["missing", key],
+        message: `${key} is both a metric and missing`,
+      })
     }
-    // A displayed value always belongs to a parsed number.
-    for (const key of Object.keys(o.rawValues ?? {})) {
-      if (!(key in o.metrics)) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["rawValues", key],
-          message: `${key} has a raw value but no metric`,
-        })
-      }
+  }
+  // A displayed value always belongs to a parsed number.
+  for (const key of Object.keys(o.rawValues ?? {})) {
+    if (!(key in o.metrics)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["rawValues", key],
+        message: `${key} has a raw value but no metric`,
+      })
     }
-  })
+  }
+})
 export type Observation = z.infer<typeof Observation>
 
 export const AudienceKind = z.enum(["followers", "karma", "subscribers"])
@@ -159,58 +162,59 @@ export type PickupMethod = z.infer<typeof PickupMethod>
 /** Methods whose evidence is exact, so the pickup counts as verified. */
 export const VERIFIED_PICKUP_METHODS: readonly PickupMethod[] = ["link", "content_id", "declared"]
 
-export const Pickup = z
-  .object({
-    itemId: z.string().min(1),
-    kind: PickupKind,
-    pickupItemId: z.string().optional(),
-    pickupUrl: z.string().optional(),
-    outlet: z.string().optional(),
-    relation: z.enum(["republication", "citation"]),
-    evidence: z.object({
-      outboundLink: z.string().optional(),
-      excerpt: z.string().optional(),
-      similarity: z.number().min(0).max(1).optional(),
-      rawRef: z.string().optional(),
-    }),
-    method: PickupMethod,
-    verified: z.boolean(),
-    firstSeenAt: timestamp,
-    measuredAt: timestamp,
-    runId: z.string().optional(),
-  })
-  .superRefine((p, ctx) => {
-    if (p.verified !== VERIFIED_PICKUP_METHODS.includes(p.method)) {
+export const PickupBase = z.object({
+  itemId: z.string().min(1),
+  kind: PickupKind,
+  pickupItemId: z.string().optional(),
+  pickupUrl: z.string().optional(),
+  outlet: z.string().optional(),
+  relation: z.enum(["republication", "citation"]),
+  evidence: z.object({
+    outboundLink: z.string().optional(),
+    excerpt: z.string().optional(),
+    similarity: z.number().min(0).max(1).optional(),
+    rawRef: z.string().optional(),
+  }),
+  method: PickupMethod,
+  verified: z.boolean(),
+  firstSeenAt: timestamp,
+  measuredAt: timestamp,
+  runId: z.string().optional(),
+})
+
+/** Unrefined shape of `Pickup`, for consumers that need `.extend()`, `.pick()` or `.partial()`. */
+export const Pickup = PickupBase.superRefine((p, ctx) => {
+  if (p.verified !== VERIFIED_PICKUP_METHODS.includes(p.method)) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["verified"],
+      message: "verified must be true exactly for link, content_id and declared methods",
+    })
+    return
+  }
+  const e = p.evidence
+  const hasEvidence = e.outboundLink !== undefined || e.excerpt !== undefined || e.similarity !== undefined
+  if (p.method === "link" || p.method === "content_id") {
+    if (!hasEvidence) {
+      ctx.addIssue({ code: "custom", path: ["evidence"], message: `${p.method} pickup needs evidence` })
+    }
+    if (!e.rawRef) {
       ctx.addIssue({
         code: "custom",
-        path: ["verified"],
-        message: "verified must be true exactly for link, content_id and declared methods",
+        path: ["evidence", "rawRef"],
+        message: `${p.method} pickup needs evidence.rawRef`,
       })
-      return
     }
-    const e = p.evidence
-    const hasEvidence = e.outboundLink !== undefined || e.excerpt !== undefined || e.similarity !== undefined
-    if (p.method === "link" || p.method === "content_id") {
-      if (!hasEvidence) {
-        ctx.addIssue({ code: "custom", path: ["evidence"], message: `${p.method} pickup needs evidence` })
-      }
-      if (!e.rawRef) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["evidence", "rawRef"],
-          message: `${p.method} pickup needs evidence.rawRef`,
-        })
-      }
-    } else if (p.method === "declared") {
-      if (e.outboundLink === undefined && e.excerpt === undefined && !p.outlet) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["evidence"],
-          message: "declared pickup needs an excerpt, an outbound link or an outlet",
-        })
-      }
+  } else if (p.method === "declared") {
+    if (e.outboundLink === undefined && e.excerpt === undefined && !p.outlet) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["evidence"],
+        message: "declared pickup needs an excerpt, an outbound link or an outlet",
+      })
     }
-  })
+  }
+})
 export type Pickup = z.infer<typeof Pickup>
 
 export const Recipe = z.object({

@@ -14,7 +14,7 @@ filesystem, no network, one runtime dependency (`zod`).
   no id.
 - **`canonicalUrl(url)`**: lowercase host, no fragment, no credentials, no
   default port, tracking parameters removed (`utm_*`, `fbclid`, `gclid`,
-  `mc_cid`, `mc_eid`, `ref_src`, `igshid`, `si`, ...), remaining
+  `mc_cid`, `mc_eid`, `ref_src`, `igshid`, ...; `si` on YouTube hosts only), remaining
   parameters sorted, no trailing slash. It only normalises http(s); any other
   input comes back trimmed and unchanged. The result is a dedup key: keep the
   original URL too, and pass the final URL (redirects are not followed).

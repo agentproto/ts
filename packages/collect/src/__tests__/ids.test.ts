@@ -3,7 +3,7 @@ import { canonicalUrl, itemId, sha256Hex, itemIdFromUrl, normalizeText, textFing
 
 describe("canonicalUrl", () => {
   it("drops tracking params, keeps real ones sorted", () => {
-    expect(canonicalUrl("https://Example.com/a?utm_source=x&b=2&fbclid=z&a=1&gclid=q&ref=hn&si=9")).toBe(
+    expect(canonicalUrl("https://Example.com/a?utm_source=x&b=2&fbclid=z&a=1&gclid=q&ref=hn")).toBe(
       "https://example.com/a?a=1&b=2&ref=hn",
     )
   })
@@ -57,6 +57,12 @@ describe("canonicalUrl", () => {
     expect(canonicalUrl("urn:isbn:0451450523")).toBe("urn:isbn:0451450523")
     expect(canonicalUrl("data:text/plain;base64,SGk=")).toBe("data:text/plain;base64,SGk=")
     expect(canonicalUrl("//example.com/a")).toBe("//example.com/a")
+  })
+  it("drops si on YouTube hosts only", () => {
+    expect(canonicalUrl("https://youtu.be/abc?si=xyz&t=5")).toBe("https://youtu.be/abc?t=5")
+    expect(canonicalUrl("https://www.youtube.com/watch?v=abc&si=xyz")).toBe("https://www.youtube.com/watch?v=abc")
+    expect(canonicalUrl("https://example.com/a?si=7")).toBe("https://example.com/a?si=7")
+    expect(canonicalUrl("https://notyoutube.com/a?si=7")).toBe("https://notyoutube.com/a?si=7")
   })
   it("returns non-URLs trimmed", () => {
     expect(canonicalUrl("  not a url ")).toBe("not a url")
