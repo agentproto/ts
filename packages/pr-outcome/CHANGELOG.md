@@ -1,5 +1,13 @@
 # @agentproto/pr-outcome
 
+## 0.1.17
+
+### Patch Changes
+
+- Updated dependencies [02d7179]
+- Updated dependencies [e268e42]
+  - @agentproto/runtime@6.9.0
+
 ## 0.1.16
 
 ### Patch Changes

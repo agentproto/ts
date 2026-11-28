@@ -1,6 +1,6 @@
 {
   "name": "@agentproto/collect",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Collect public posts, articles and metrics with provenance: zod schemas, stable ids, URL canonicalisation, text fingerprints and a store port with memory and on-disk (node entry) implementations.",
   "keywords": [
     "agentproto",

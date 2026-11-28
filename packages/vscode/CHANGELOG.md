@@ -1,5 +1,13 @@
 # agentproto-vscode
 
+## 0.26.11
+
+### Patch Changes
+
+- Updated dependencies [02d7179]
+- Updated dependencies [e268e42]
+  - @agentproto/runtime@6.9.0
+
 ## 0.26.10
 
 ### Patch Changes

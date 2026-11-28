@@ -1,5 +1,11 @@
 # @agentproto/cli
 
+## 1.40.1
+
+### Patch Changes
+
+- e268e42: Show manifest-declared harness deprecations in adapter listings and when starting a session or running a harness directly. The Gemini CLI deprecation names Antigravity as its replacement.
+
 ## 1.40.0
 
 ### Minor Changes
