@@ -53,6 +53,17 @@ filesystem (Node built-ins only).
   attempts and a browser lane of one; each attempt is queued in the lane of its
   own transport, so a fallback moves the task between lanes. Every request goes
   through a per-host FIFO gate shared by all connectors (zero delay included).
+  The host gate covers the `http` and `api` transports. The browser lane is
+  serialised and paced by the connector delay (on `open` and `fetchInPage`);
+  requests a page makes by itself are outside the engine.
+  Start order is guaranteed per lane (by global order key) and non-browser
+  tasks start first; there is no global order across the two lanes, by design.
+  Each engine-written observation and pickup carries a `recordKey` (hash of run,
+  task, raw hash and position in the parse output): readers keep the first
+  record of a key, so a task redone after a crash never double-counts while
+  distinct readings with equal values are all kept. Each task start is recorded
+  once (`started`) and charges the cap budget, so a crash after a start still
+  counts. Resuming a run with no plan file plans it again from the frozen recipe.
   Also a per-connector cap, one writer, and the store lock held for the whole
   run and released last. One collector drives one store (the store lock makes a
   second run wait). A store failure surfaces as a `CollectRunError` after the

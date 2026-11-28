@@ -805,7 +805,8 @@ describe("engine", () => {
       }).run(recipeOf(["fake"]), { signal: ac.signal })
       expect(browser.opened).toEqual([])
       expect(report.connectors[0]).toMatchObject({ status: "partial", tasks: { planned: 1, done: 0, failed: 0 } })
-      expect((await readAll(store.tasks(report.runId))).records[0]!.status).toBe("pending")
+      // It had started (and used its budget), but never ended: resumable.
+      expect((await readAll(store.tasks(report.runId))).records[0]!.status).toBe("started")
     })
   })
 
@@ -888,5 +889,213 @@ describe("engine", () => {
     const report = await createCollector({ store, transports: { http }, connectors: [fakeConnector()] }).run({ ...recipeOf(["fake"]), sampling: { seed: 1 } })
     expect(report.connectors[0]!.status).toBe("ok")
     expect((await readAll(store.events(report.runId))).records.some((e) => e.type === "warning")).toBe(true)
+  })
+
+  describe("second review round", () => {
+    const twoRaws = (first: { status: number; challenge?: boolean }, second: { status: number; challenge?: boolean }, tasks = ["c1", "c2", "c3"]) => {
+      const base = fakeConnector({ tasks })
+      return defineConnector({
+        ...base,
+        fetch: async (task, transport, ctx) => {
+          if (task.id !== "c1") return base.fetch(task, transport, ctx)
+          const mk = (n: number, x: { status: number; challenge?: boolean }) => ({
+            url: `https://fake.example.com/c1/${n}`,
+            ext: "html",
+            bytes: enc(`page ${n}`),
+            httpStatus: x.status,
+            challenge: x.challenge,
+          })
+          return { raws: [mk(1, first), mk(2, second)] }
+        },
+      })
+    }
+
+    it("a challenge in a later raw wins over an earlier failure and stops the connector", async () => {
+      const store = memoryStore()
+      const http = webOf("fake.example.com", ["c2", "c3"])
+      const report = await createCollector({
+        store,
+        transports: { http, browser: fakeBrowser() },
+        connectors: [twoRaws({ status: 404 }, { status: 200, challenge: true })],
+      }).run(recipeOf(["fake"], 1))
+      expect(report.connectors[0]).toMatchObject({ status: "failed", tasks: { failed: 1, skipped: 2 }, failures: { blocked: 1 } })
+      expect(http.calls).toHaveLength(0)
+      expect((await readAll(store.tasks(report.runId))).records.filter((t) => t.reason === "challenge")).toHaveLength(3)
+    })
+
+    it("aborts the in-flight requests of a connector that met a challenge", async () => {
+      const store = memoryStore()
+      const base = fakeConnector({ tasks: ["c1", "c2"] })
+      let started = 0
+      const connector = defineConnector({
+        ...base,
+        fetch: async (task, transport, ctx) => {
+          started++
+          if (task.id === "c1") {
+            while (started < 2) await new Promise((r) => setTimeout(r, 1))
+            return { raws: [{ url: "https://fake.example.com/c1", ext: "html", bytes: enc("verify"), httpStatus: 200, challenge: true }] }
+          }
+          await new Promise<never>((_, reject) => {
+            ctx.signal?.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })))
+          })
+          return { raws: [] }
+        },
+      })
+      const report = await createCollector({ store, transports: { http: fakeHttp() }, connectors: [connector] }).run(recipeOf(["fake"], 2))
+      expect(report.connectors[0]).toMatchObject({ status: "failed", tasks: { failed: 1, skipped: 1, done: 0 } })
+      const c2 = (await readAll(store.tasks(report.runId))).records.find((t) => t.taskId === "fake/c2")
+      expect(c2).toMatchObject({ status: "skipped", reason: "challenge" })
+    })
+
+    it("keeps distinct readings with equal values, and drops a record a redone task writes again", async () => {
+      const base = memoryStore()
+      let crash = true
+      const store: CollectStore = {
+        ...base,
+        appendTask: async (id, t) => {
+          if (crash && t.status === "done") {
+            crash = false
+            throw new Error("disk gone")
+          }
+          return base.appendTask(id, t)
+        },
+      }
+      const http = webOf("fake.example.com", ["a"])
+      const connector = fakeConnector({
+        parse: () => ({
+          items: [{ id: "fake:1", source: "fake", kind: "post", url: "https://s.test/1", text: "one" }],
+          observations: [
+            { itemId: "fake:1", metrics: { views: 5 } },
+            { itemId: "fake:1", metrics: { views: 5 } },
+          ],
+        }),
+      })
+      const collector = createCollector({ store, transports: { http }, connectors: [connector] })
+      await expect(collector.run(recipeOf(["fake"]), { runId: "keys" })).rejects.toBeInstanceOf(CollectRunError)
+      expect(await all(store.observations())).toHaveLength(2)
+      await collector.resume("keys")
+      const obs = await all(store.observations())
+      expect(obs).toHaveLength(2)
+      expect(new Set(obs.map((o) => o.recordKey)).size).toBe(2)
+    })
+
+    it("plans again on resume when the run has no plan, and keeps all roots pending when cancelled after planning", async () => {
+      const store = memoryStore()
+      await store.createRun("noplan", recipeOf(["fake"]) as never)
+      const http = webOf("fake.example.com", ["a", "b"])
+      const collector = createCollector({ store, transports: { http }, connectors: [fakeConnector({ tasks: ["a", "b"] })] })
+      const report = await collector.resume("noplan")
+      expect(report.connectors[0]).toMatchObject({ status: "ok", tasks: { planned: 2, done: 2 } })
+      expect((await store.readPlan("noplan"))?.map((p) => p.taskId)).toEqual(["fake/a", "fake/b"])
+
+      const ac = new AbortController()
+      ac.abort()
+      const cancelled = await collector.run(recipeOf(["fake"]), { signal: ac.signal })
+      expect((await store.readPlan(cancelled.runId))).toHaveLength(2)
+      expect(Object.values(await taskStates(store, cancelled.runId))).toEqual(["pending", "pending"])
+      expect(cancelled.connectors[0]).toMatchObject({ status: "partial", tasks: { planned: 2, done: 0 } })
+    })
+
+    it("persists one started record per unique start and charges the budget from them", async () => {
+      const base = memoryStore()
+      const statuses: Array<[string, string]> = []
+      let crash = true
+      const store: CollectStore = {
+        ...base,
+        appendTask: async (id, t) => {
+          statuses.push([t.taskId, t.status])
+          if (crash && t.taskId === "fake/b" && t.status === "done") {
+            crash = false
+            throw new Error("disk gone")
+          }
+          return base.appendTask(id, t)
+        },
+      }
+      const http = webOf("fake.example.com", ["a", "b", "c"])
+      const collector = createCollector({ store, transports: { http }, connectors: [fakeConnector({ tasks: ["a", "b", "c"], maxTasksPerRun: 2 })] })
+      await expect(collector.run(recipeOf(["fake"], 1), { runId: "budget" })).rejects.toBeInstanceOf(CollectRunError)
+      expect(await taskStates(base, "budget")).toMatchObject({ "fake/a": "done", "fake/b": "started", "fake/c": "pending" })
+      const report = await collector.resume("budget")
+      // b retries on the budget it already used; c finds none left.
+      expect(report.connectors[0]).toMatchObject({ tasks: { done: 2, skipped: 1 } })
+      expect(statuses.filter(([k, st]) => k === "fake/b" && st === "started")).toHaveLength(1)
+      expect(statuses.filter(([k, st]) => k === "fake/a" && st === "started")).toHaveLength(1)
+    })
+
+    it("wraps a nullish rejection, and logs a failing async or sync onEvent as an error event", async () => {
+      const unhandled: unknown[] = []
+      const on = (e: unknown) => unhandled.push(e)
+      process.on("unhandledRejection", on)
+      try {
+        const base = memoryStore()
+        let n = 0
+        const store: CollectStore = {
+          ...base,
+          appendEvent: (id, e) => (++n > 2 && e.type !== "error" ? Promise.reject(undefined) : base.appendEvent(id, e)),
+        }
+        const http = webOf("fake.example.com", ["a", "b"])
+        const err = await createCollector({ store, transports: { http }, connectors: [fakeConnector({ tasks: ["a", "b"] })] })
+          .run(recipeOf(["fake"], 2))
+          .catch((e) => e)
+        expect(err).toBeInstanceOf(CollectRunError)
+        expect(err.cause).toBeInstanceOf(Error)
+        expect(String(err.cause.message)).toMatch(/undefined/)
+
+        const events = memoryStore()
+        const report = await createCollector({ store: events, transports: { http }, connectors: [fakeConnector({ tasks: ["a", "b"] })] }).run(
+          recipeOf(["fake"]),
+          { onEvent: (e) => (e.type === "task.end" ? Promise.reject(new Error("listener broke")) : undefined) },
+        )
+        expect(report.connectors[0]!.status).toBe("ok")
+        const sync = await createCollector({ store: events, transports: { http }, connectors: [fakeConnector({ tasks: ["a"] })] }).run(
+          recipeOf(["fake"]),
+          { onEvent: () => { throw new Error("sync broke") } },
+        )
+        const logged = (await readAll(events.events(report.runId))).records.filter((e) => e.type === "error")
+        expect(logged.map((e) => e.data?.message)).toEqual(["listener broke", "listener broke"])
+        expect((await readAll(events.events(sync.runId))).records.some((e) => e.type === "error" && e.data?.message === "sync broke")).toBe(true)
+        await new Promise((r) => setTimeout(r, 20))
+        expect(unhandled).toEqual([])
+      } finally {
+        process.off("unhandledRejection", on)
+      }
+    })
+
+    describe("status wins over a thrown cause", () => {
+      const run = async (err: TransportError) => {
+        const http = fakeHttp()
+        http.respond.set("https://fake.example.com/a", () => {
+          throw err
+        })
+        const browser = fakeBrowser()
+        browser.respond.set("https://fake.example.com/a", { posts: [{ id: "a", url: "https://s.test/a", text: "a", views: 1 }] })
+        const report = await createCollector({
+          store: memoryStore(),
+          transports: { http, browser },
+          connectors: [fakeConnector({ transports: ["http", "browser"] })],
+        }).run(recipeOf(["fake"]))
+        return { report, browser }
+      }
+      it.each([
+        ["blocked", 404],
+        ["empty", 500],
+        ["network", 502],
+      ] as const)("a %s error with status %i is an http failure with no fallback", async (cause, status) => {
+        const { report, browser } = await run(new TransportError(cause, "x", { status }))
+        expect(browser.opened).toEqual([])
+        expect(report.connectors[0]).toMatchObject({ failures: { http: 1 }, escalations: [] })
+      })
+      it("keeps the named cause on a 2xx status, and a 429 still falls back", async () => {
+        const a = await run(new TransportError("blocked", "x", { status: 200 }))
+        expect(a.browser.opened).toHaveLength(1)
+        const b = await run(new TransportError("network", "x", { status: 429 }))
+        expect(b.browser.opened).toHaveLength(1)
+      })
+      it("a challenge error stays a hard stop whatever its status", async () => {
+        const { report, browser } = await run(new TransportError("challenge", "x", { status: 403 }))
+        expect(browser.opened).toEqual([])
+        expect(report.connectors[0]!.status).toBe("failed")
+      })
+    })
   })
 })

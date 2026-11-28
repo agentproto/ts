@@ -10,7 +10,7 @@ import {
   type RecipeSource,
 } from "./connector"
 import { computeCoverage } from "./coverage"
-import { canonicalUrl, itemIdFromUrl, textFingerprint } from "./ids"
+import { canonicalUrl, itemIdFromUrl, sha256Hex, textFingerprint } from "./ids"
 import {
   Actor,
   CollectItem,
@@ -153,6 +153,8 @@ interface ConnectorState {
   cap?: number
   /** A challenge stopped the connector for the rest of the run. */
   stopped: boolean
+  /** Aborts this connector's in-flight requests: on a challenge, or when the run is cancelled. */
+  controller: AbortController
 }
 
 interface Failure {
@@ -166,6 +168,12 @@ interface Failure {
 function classifyError(e: unknown): Failure {
   if (e instanceof TransportError) {
     const message = e.message
+    // A challenge always wins; otherwise a non-2xx status decides, whatever cause the error names.
+    if (e.cause !== "challenge" && e.status !== undefined && (e.status < 200 || e.status >= 300)) {
+      return FALLBACK_STATUSES.has(e.status)
+        ? { fallback: true, challenge: false, cause: "blocked", message }
+        : { fallback: false, challenge: false, cause: "http", message }
+    }
     switch (e.cause) {
       case "challenge":
         return { fallback: false, challenge: true, cause: "blocked", message }
@@ -238,6 +246,10 @@ function randomId(random: () => number): string {
   let s = ""
   for (let i = 0; i < 6; i++) s += Math.floor(random() * 36).toString(36)
   return s
+}
+
+function toError(e: unknown): Error {
+  return e instanceof Error ? e : new Error(`rejected with ${e === null || e === undefined ? String(e) : typeof e === "string" ? e : JSON.stringify(e)}`)
 }
 
 function abortError(): Error {
@@ -336,7 +348,7 @@ export function createCollector(options: CollectorOptions): Collector {
 
   async function connectorState(id: string, recipe: Recipe): Promise<ConnectorState> {
     const connector = registry.get(id)
-    const state: ConnectorState = { id, connector, transports: [], started: 0, stopped: false }
+    const state: ConnectorState = { id, connector, transports: [], started: 0, stopped: false, controller: new AbortController() }
     if (!connector) {
       state.skipReason = `connector "${id}" is not registered`
       return state
@@ -393,10 +405,21 @@ export function createCollector(options: CollectorOptions): Collector {
       write(async () => {
         const event: EventRecord = { at: iso(), type, ...(data ? { data } : {}) }
         await store.appendEvent(runId, event)
+        // A failing listener, sync or async, never breaks the run: it is logged as an `error` event.
+        const report = (e: unknown) => {
+          const p = write(() =>
+            store.appendEvent(runId, { at: iso(), type: "error", data: { source: "onEvent", message: toError(e).message } }),
+          ).then(
+            () => undefined,
+            () => undefined,
+          )
+          active.add(p)
+          void p.finally(() => active.delete(p))
+        }
         try {
-          onEvent?.({ ...event, runId })
-        } catch {
-          // A failing listener never breaks the run.
+          void Promise.resolve(onEvent?.({ ...event, runId })).catch(report)
+        } catch (e) {
+          report(e)
         }
       })
     const record = (r: Omit<TaskRecord, "updatedAt">) =>
@@ -411,6 +434,11 @@ export function createCollector(options: CollectorOptions): Collector {
     const connectorIds = [...new Set(recipe.sources.map((s) => s.connector))]
     const states = new Map<string, ConnectorState>()
     for (const id of connectorIds) states.set(id, await connectorState(id, recipe))
+    const abortConnectors = () => {
+      for (const st of states.values()) st.controller.abort()
+    }
+    if (signal?.aborted) abortConnectors()
+    else signal?.addEventListener("abort", abortConnectors, { once: true })
     const payloadOf = (t: Task) => ({ id: t.id, ...(t.kind ? { kind: t.kind } : {}), params: t.params })
 
     const known = new Set<string>()
@@ -428,37 +456,43 @@ export function createCollector(options: CollectorOptions): Collector {
       escalations: [],
     })
 
-    if (mode === "new") {
+    /** Root tasks of the recipe. `plan()` is deterministic, so this can be regenerated from the frozen recipe. */
+    const buildPlan = (): PlanEntry[] => {
       const plan: PlanEntry[] = []
-      const records: Array<Omit<TaskRecord, "updatedAt">> = []
+      const seen = new Set<string>()
       connectorIds.forEach((id, ci) => {
         const state = states.get(id)!
         if (!state.connector) return
         const sources: RecipeSource[] = recipe.sources.filter((s) => s.connector === id)
-        const planned = state.connector.plan(recipe, sources).map((t) => CollectTask.parse(t))
         let index = 0
-        for (const task of planned) {
+        for (const t of state.connector.plan(recipe, sources)) {
+          const task = CollectTask.parse(t)
           const k = key(id, task.id)
-          if (known.has(k)) continue
-          known.add(k)
-          const order = [ci, index++]
-          plan.push({ taskId: k, connector: id, order, payload: payloadOf(task) })
-          const base = { taskId: k, connector: id, order, payload: payloadOf(task) }
-          if (state.skipReason) records.push({ ...base, status: "skipped", reason: state.skipReason })
-          else {
-            records.push({ ...base, status: "pending" })
-            entries.push(mkEntry(state, k, task, order))
-          }
+          if (seen.has(k)) continue
+          seen.add(k)
+          plan.push({ taskId: k, connector: id, order: [ci, index++], payload: payloadOf(task) })
         }
       })
-      // The whole root plan lands in one atomic write, before anything runs.
-      await write(() => store.writePlan(runId, plan))
-      for (const r of records) await record(r)
-      for (const st of states.values()) {
-        if (st.skipReason) await emit("connector.skipped", { connector: st.id, reason: st.skipReason })
+      return plan
+    }
+
+    // The whole root plan lands in one atomic write, before anything runs. A resumed run
+    // with no plan file (it never got one) is planned again, never taken as an empty plan.
+    let plan = mode === "resume" ? await store.readPlan(runId) : undefined
+    if (!plan) {
+      const built = buildPlan()
+      await write(() => store.writePlan(runId, built))
+      plan = built
+    }
+    if (mode === "new") {
+      for (const p of plan) {
+        const st = states.get(p.connector)
+        if (st && !st.skipReason) {
+          await record({ taskId: p.taskId, connector: p.connector, status: "pending", order: p.order, payload: p.payload })
+        }
       }
-    } else {
-      const plan = (await store.readPlan(runId)) ?? []
+    }
+    {
       const { records } = await readAll(store.tasks(runId))
       const byKey = new Map<string, { connector: string; order: number[]; payload: unknown; rec?: TaskRecord }>()
       plan.forEach((p) => byKey.set(p.taskId, { connector: p.connector, order: p.order, payload: p.payload }))
@@ -476,7 +510,8 @@ export function createCollector(options: CollectorOptions): Collector {
         known.add(k)
         const status = v.rec?.status ?? "pending"
         const state = states.get(v.connector)
-        if (status === "done" || status === "failed") {
+        // A task that started (even if the process died before it ended) used its budget.
+        if (status === "done" || status === "failed" || status === "started") {
           counted.add(k)
           if (state) state.started++
         }
@@ -513,7 +548,7 @@ export function createCollector(options: CollectorOptions): Collector {
     let poolActive = 0
     let browserActive = 0
     let totalStarted = counted.size
-    let fatal: unknown
+    let fatal: Error | undefined
     const aborted = () => signal?.aborted === true
     const stopping = () => aborted() || fatal !== undefined
     let finish: () => void = () => {}
@@ -536,7 +571,7 @@ export function createCollector(options: CollectorOptions): Collector {
       const p: Promise<void> = attempt(entry)
         .catch((e) => {
           if (stopping() && (e as { name?: string })?.name === "AbortError") return
-          fatal ??= e
+          fatal ??= toError(e)
         })
         .finally(() => {
           active.delete(p)
@@ -563,27 +598,36 @@ export function createCollector(options: CollectorOptions): Collector {
       await emit("task.skipped", { connector: entry.connector.id, taskId: entry.task.id, reason: why })
     }
 
-    /** A challenge stops the connector: its queued tasks are skipped with reason `challenge`. */
-    async function stopConnector(state: ConnectorState) {
+    /**
+     * A challenge stops the connector. The flag is set and the queued tasks are taken out
+     * of both lanes synchronously, so the pump cannot launch one of them in between.
+     */
+    function haltConnector(state: ConnectorState): Entry[] {
       state.stopped = true
-      await emit("connector.stopped", { connector: state.id, reason: "challenge" })
+      state.controller.abort()
+      const removed: Entry[] = []
       for (const q of [poolQueue, browserQueue]) {
         for (let i = q.length - 1; i >= 0; i--) {
-          if (q[i]!.connector.id === state.id) {
-            const [e] = q.splice(i, 1)
-            await skip(e!, "challenge", "challenge")
-          }
+          if (q[i]!.connector.id === state.id) removed.unshift(...q.splice(i, 1))
         }
       }
+      return removed.sort((x, y) => compareOrder(x.order, y.order))
+    }
+
+    async function skipHalted(state: ConnectorState, removed: Entry[]) {
+      await emit("connector.stopped", { connector: state.id, reason: "challenge" })
+      for (const e of removed) await skip(e, "challenge", "challenge")
     }
 
     async function prepare(
       entry: Entry,
       parsed: ParseResult,
       ref: string,
+      rawHash: string,
       fetchedAt: string,
       transport: TransportName,
     ): Promise<Prepared> {
+      const keyOf = (kind: string, index: number) => sha256Hex(JSON.stringify([runId, entry.key, rawHash, kind, index]))
       const items: CollectItem[] = []
       for (const p of parsed.items ?? []) {
         const canonical = p.canonicalUrl ?? (p.url ? canonicalUrl(p.url) : undefined)
@@ -602,24 +646,28 @@ export function createCollector(options: CollectorOptions): Collector {
         if (entry.connector.ext && item.ext !== undefined) entry.connector.ext.parse(item.ext)
         items.push(item)
       }
-      return {
-        ref,
-        items,
-        observations: (parsed.observations ?? []).map((o) =>
-          Observation.parse({ measuredAt: fetchedAt, transport, rawRef: ref, ...o, runId, taskId: entry.key }),
-        ),
-        actors: (parsed.actors ?? []).map((a) => Actor.parse(a)),
-        pickups: (parsed.pickups ?? []).map((p) =>
+      // Identity of a record: run, task, raw and position in the parse output.
+      const observations: Observation[] = []
+      for (const [i, o] of (parsed.observations ?? []).entries()) {
+        observations.push(
+          Observation.parse({ measuredAt: fetchedAt, transport, rawRef: ref, ...o, runId, taskId: entry.key, recordKey: await keyOf("observation", i) }),
+        )
+      }
+      const pickups: Pickup[] = []
+      for (const [i, p] of (parsed.pickups ?? []).entries()) {
+        pickups.push(
           Pickup.parse({
             firstSeenAt: fetchedAt,
             measuredAt: fetchedAt,
             ...p,
             runId,
             taskId: entry.key,
+            recordKey: await keyOf("pickup", i),
             evidence: { rawRef: ref, ...p.evidence },
           }),
-        ),
+        )
       }
+      return { ref, items, observations, actors: (parsed.actors ?? []).map((a) => Actor.parse(a)), pickups }
     }
 
     /** The owner of an item id: where an observation or a link to it must point. */
@@ -734,6 +782,14 @@ export function createCollector(options: CollectorOptions): Collector {
           }
           state.started++
           totalStarted++
+          // One durable record per unique start: a crash after it still counts against the budget.
+          await record({
+            taskId: entry.key,
+            connector: connector.id,
+            status: "started",
+            order: entry.order,
+            payload: payloadOf(entry.task),
+          })
         }
         entry.started = true
         entry.t0 = clock.now()
@@ -747,15 +803,20 @@ export function createCollector(options: CollectorOptions): Collector {
       let failedRaws: FetchedRaw[] = []
       let thrown = false
       try {
-        result = await connector.fetch(entry.task, handleFor(name, connector, signal), { secrets, signal, now: iso() })
+        const sig = state.controller.signal
+        result = await connector.fetch(entry.task, handleFor(name, connector, sig), { secrets, signal: sig, now: iso() })
         failedRaws = result.raws
-        failure = result.raws.map(classifyRaw).find((f) => f !== undefined)
+        // A challenge in any raw wins over the other failures.
+        const found = result.raws.map(classifyRaw).filter((f): f is Failure => f !== undefined)
+        failure = found.find((f) => f.challenge) ?? found[0]
         if (!failure && result.raws.length === 0) {
           failure = { fallback: true, challenge: false, cause: "empty", message: "no content" }
         }
       } catch (e) {
         if (aborted()) return // stays pending
         failure = classifyError(e)
+        // Aborted because another task of this connector met a challenge: skipped, not failed.
+        if (state.stopped && !failure.challenge) return skip(entry, "challenge", "challenge")
         thrown = true
         if (e instanceof TransportError && e.url) {
           failedRaws = [{ url: e.url, ext: e.ext ?? "bin", bytes: e.body ?? new Uint8Array(), httpStatus: e.status }]
@@ -763,6 +824,8 @@ export function createCollector(options: CollectorOptions): Collector {
       }
 
       const fetchedAt = iso()
+      // Synchronous, before any await: nothing of this connector can start after this line.
+      const halted = failure?.challenge ? haltConnector(state) : []
       if (failure) {
         const f = failure
         await write(async () => {
@@ -782,7 +845,7 @@ export function createCollector(options: CollectorOptions): Collector {
         })
         if (f.challenge) {
           await finishFailed(entry, f)
-          await stopConnector(state)
+          await skipHalted(state, halted)
           return
         }
         const next = state.transports[entry.attempt + 1]
@@ -800,7 +863,7 @@ export function createCollector(options: CollectorOptions): Collector {
       const counters: TaskCounters = { items: 0, newItems: 0, duplicates: 0, observations: 0, metricValues: 0 }
       let followUps: Entry[] = []
       const parseError = await write(async (): Promise<string | undefined> => {
-        const stored: Array<{ raw: FetchedRaw; ref: string }> = []
+        const stored: Array<{ raw: FetchedRaw; ref: string; hash: string }> = []
         for (const raw of result!.raws) {
           const put = await store.putRaw({
             connector: connector.id,
@@ -812,18 +875,18 @@ export function createCollector(options: CollectorOptions): Collector {
             transport: name,
             runId,
           })
-          stored.push({ raw, ref: put.ref })
+          stored.push({ raw, ref: put.ref, hash: put.hash })
         }
         const prepared: Prepared[] = []
         const tasks: Task[] = []
         try {
-          for (const { raw, ref } of stored) {
+          for (const { raw, ref, hash } of stored) {
             const parsed = await connector.parse({
               connector: connector.id,
               task: entry.task,
               raw: { ref, url: raw.url, ext: raw.ext, bytes: raw.bytes, httpStatus: raw.httpStatus, fetchedAt, transport: name },
             })
-            prepared.push(await prepare(entry, parsed, ref, fetchedAt, name))
+            prepared.push(await prepare(entry, parsed, ref, hash, fetchedAt, name))
           }
           for (const t of result!.tasks ?? []) tasks.push(CollectTask.parse(t))
         } catch (e) {
@@ -908,7 +971,7 @@ export function createCollector(options: CollectorOptions): Collector {
       const done = count("done")
       const failedTasks = mine.filter((t) => t.status === "failed")
       const skipped = count("skipped")
-      const pending = count("pending")
+      const pending = count("pending") + count("started")
       const failures: Partial<Record<FailureCause, number>> = {}
       for (const t of failedTasks) failures[t.cause ?? "other"] = (failures[t.cause ?? "other"] ?? 0) + 1
 

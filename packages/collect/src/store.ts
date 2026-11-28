@@ -30,7 +30,7 @@ export const PlanEntry = z.object({
 })
 export type PlanEntry = z.infer<typeof PlanEntry>
 
-export const TaskStatus = z.enum(["pending", "done", "failed", "skipped"])
+export const TaskStatus = z.enum(["pending", "started", "done", "failed", "skipped"])
 export type TaskStatus = z.infer<typeof TaskStatus>
 
 /** One line of `tasks.jsonl`. The last line for a task id is its current state. */
@@ -200,10 +200,10 @@ export class StoreVersionError extends Error {
 
 /**
  * Drop the copy a task writes again when it is redone after a crash: records
- * tagged with both `runId` and `taskId` are kept once per `key`, the first one
- * wins; untagged records always pass. The key leaves out timestamps on purpose
- * (a redone task fetches again and gets new ones), so two readings of one item
- * in one task with identical values collapse to one: a known trade-off.
+ * with a `recordKey` are kept once per key, the first write wins (a retry that
+ * reads other values for the same raw and index is the same record); records
+ * without one always pass. Two distinct readings with equal values have
+ * different keys and are both kept.
  */
 export function dropRedone<T>(source: Reader<T>, tag: (r: T) => string | undefined): Reader<T> {
   return {
@@ -224,26 +224,9 @@ export function dropRedone<T>(source: Reader<T>, tag: (r: T) => string | undefin
   }
 }
 
-/**
- * Redo key of an observation: run, task, item and the values read. Two
- * readings of one item with different values in the same task (two aliases of
- * one post, say) are both kept; the same reading written again is not.
- */
-export const observationRedoKey = (o: Observation) =>
-  o.runId && o.taskId
-    ? JSON.stringify([
-        o.runId,
-        o.taskId,
-        o.itemId,
-        "observation",
-        stableStringify({ m: o.metrics, p: o.partMetrics, r: o.rawValues, x: o.missing }),
-      ])
-    : undefined
-/** Redo key of a pickup: run, task, item, kind, target, method and evidence. */
-export const pickupRedoKey = (p: Pickup) =>
-  p.runId && p.taskId
-    ? JSON.stringify([p.runId, p.taskId, p.itemId, "pickup", p.kind, p.pickupItemId ?? p.pickupUrl ?? "", p.method, stableStringify(p.evidence)])
-    : undefined
+/** Records without a `recordKey` (not written by the engine) are never dropped. */
+export const observationRedoKey = (o: Observation) => o.recordKey
+export const pickupRedoKey = (p: Pickup) => p.recordKey
 
 /** Dedup key kinds. Keys are `<kind>:<value>`. */
 export function seenKey(kind: "id" | "url" | "content", value: string): string {

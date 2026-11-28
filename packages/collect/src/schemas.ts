@@ -96,8 +96,10 @@ export const ObservationBase = z.object({
   missing: z.partialRecord(MetricName, MissingReason).optional(),
   transport: z.string().optional(),
   runId: z.string().optional(),
-  /** Task that wrote it. With `runId`, lets readers drop the copy a redone task writes twice. */
+  /** Task that wrote it. */
   taskId: z.string().optional(),
+  /** Durable identity of an engine-written record: readers keep the first record of a key and drop repeats. */
+  recordKey: z.string().optional(),
   rawRef: z.string().optional(),
 })
 
@@ -182,8 +184,10 @@ export const PickupBase = z.object({
   firstSeenAt: timestamp,
   measuredAt: timestamp,
   runId: z.string().optional(),
-  /** Task that wrote it. With `runId`, lets readers drop the copy a redone task writes twice. */
+  /** Task that wrote it. */
   taskId: z.string().optional(),
+  /** Durable identity of an engine-written record: readers keep the first record of a key and drop repeats. */
+  recordKey: z.string().optional(),
 })
 
 /** Unrefined shape of `Pickup`, for consumers that need `.extend()`, `.pick()` or `.partial()`. */
