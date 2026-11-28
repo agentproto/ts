@@ -745,6 +745,7 @@ export function createCollector(options: CollectorOptions): Collector {
       let result: FetchResult | undefined
       let failure: Failure | undefined
       let failedRaws: FetchedRaw[] = []
+      let thrown = false
       try {
         result = await connector.fetch(entry.task, handleFor(name, connector, signal), { secrets, signal, now: iso() })
         failedRaws = result.raws
@@ -755,6 +756,7 @@ export function createCollector(options: CollectorOptions): Collector {
       } catch (e) {
         if (aborted()) return // stays pending
         failure = classifyError(e)
+        thrown = true
         if (e instanceof TransportError && e.url) {
           failedRaws = [{ url: e.url, ext: e.ext ?? "bin", bytes: e.body ?? new Uint8Array(), httpStatus: e.status }]
         }
@@ -774,7 +776,7 @@ export function createCollector(options: CollectorOptions): Collector {
               httpStatus: raw.httpStatus,
               transport: name,
               runId,
-              failure: classifyRaw(raw)?.cause ?? f.cause,
+              failure: thrown ? f.cause : (classifyRaw(raw)?.cause ?? f.cause),
             })
           }
         })
@@ -940,7 +942,12 @@ export function createCollector(options: CollectorOptions): Collector {
         reason = "shape check: every counter is missing"
       } else if (failedTasks.length > 0 || skipped > 0 || pending > 0) {
         status = "partial"
-        reason = pending > 0 ? "pending tasks remain" : undefined
+        reason =
+          pending > 0
+            ? "pending tasks remain"
+            : failedTasks.length > 0
+              ? `${failedTasks.length} task(s) failed`
+              : `${skipped} task(s) skipped`
       }
 
       connectors.push({

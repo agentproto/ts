@@ -868,7 +868,7 @@ describe("engine", () => {
     it("records the transport actually attempted when a failure ends the task", async () => {
       const http = fakeHttp()
       http.respond.set("https://fake.example.com/a", () => {
-        throw new TransportError("network", "reset")
+        throw new TransportError("network", "reset", { url: "https://fake.example.com/a" })
       })
       const store = memoryStore()
       const report = await createCollector({
@@ -877,6 +877,8 @@ describe("engine", () => {
         connectors: [fakeConnector({ transports: ["http", "browser"] })],
       }).run(recipeOf(["fake"]))
       expect((await readAll(store.tasks(report.runId))).records[0]).toMatchObject({ status: "failed", transport: "http", cause: "network" })
+      // The raw index keeps the cause of the failure, not "empty" for a body-less error.
+      expect((await readAll(store.rawIndex())).records[0]).toMatchObject({ failure: "network", transport: "http" })
     })
   })
 

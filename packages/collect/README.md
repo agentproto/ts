@@ -42,7 +42,7 @@ filesystem (Node built-ins only).
   tasks are `skipped` with reason `challenge`.
   The whole root plan is written first in one atomic `plan.jsonl`. The engine
   stores every raw, parses and validates every raw of a task before writing
-  anything, dedups (native id, canonical URL, content id; the seen index maps
+  anything, dedups on native id and canonical URL (the same exact text under two URLs keeps two items that share one `contentId`; the seen index maps
   each key to the item that owns it, so observations and links resolve to the
   owner), writes, then marks the task `done` with its counters. Observations
   and pickups carry `runId` and `taskId`, so a task redone after a crash does
