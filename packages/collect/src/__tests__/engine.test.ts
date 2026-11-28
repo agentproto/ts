@@ -924,14 +924,6 @@ describe("engine", () => {
     })
   })
 
-  it("warns that sampling is not implemented and runs the recipe anyway", async () => {
-    const store = memoryStore()
-    const http = webOf("fake.example.com", ["a"])
-    const report = await createCollector({ store, transports: { http }, connectors: [fakeConnector()] }).run({ ...recipeOf(["fake"]), sampling: { seed: 1 } })
-    expect(report.connectors[0]!.status).toBe("ok")
-    expect((await readAll(store.events(report.runId))).records.some((e) => e.type === "warning")).toBe(true)
-  })
-
   describe("second review round", () => {
     const twoRaws = (first: { status: number; challenge?: boolean }, second: { status: number; challenge?: boolean }, tasks = ["c1", "c2", "c3"]) => {
       const base = fakeConnector({ tasks, transports: ["browser"] })

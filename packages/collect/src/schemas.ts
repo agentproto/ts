@@ -250,12 +250,19 @@ export const Recipe = z.object({
       bands: z
         .array(
           z.object({
-            metric: MetricName,
+            /** Counter the band reads; the connector's primary counter when omitted. */
+            metric: MetricName.optional(),
+            /** Lower bound, inclusive. */
             min: z.number().optional(),
+            /** Upper bound, inclusive. */
             max: z.number().optional(),
-          }),
+            /** Most candidates this band keeps. */
+            quota: z.number().int().nonnegative().optional(),
+          }).refine((b) => b.min === undefined || b.max === undefined || b.min <= b.max, { message: "band min must not exceed max", path: ["min"] }),
         )
         .optional(),
+      /** Keep a candidate whose band counter is missing instead of dropping it as `no_metric`. */
+      keepMissingMetric: z.boolean().optional(),
       perDomainCap: z.number().int().positive().optional(),
       seed: z.number().int().optional(),
     })
@@ -267,6 +274,8 @@ export const Recipe = z.object({
     })
     .optional(),
   workers: z.number().int().positive().default(8),
+  /** Most tasks fetched or held ahead of the ordered commit cursor. Default: 4 times the worker count. */
+  lookahead: z.number().int().positive().optional(),
   sinks: z.array(z.string()).optional(),
 })
 export type Recipe = z.infer<typeof Recipe>
@@ -297,6 +306,13 @@ export type CoverageCell = z.infer<typeof CoverageCell>
 export const Coverage = z.object({ cells: z.array(CoverageCell) })
 export type Coverage = z.infer<typeof Coverage>
 
+export const SampledReport = z.object({
+  candidates: z.number().int().nonnegative(),
+  kept: z.number().int().nonnegative(),
+  dropped: z.record(z.string(), z.number().int().nonnegative()).default({}),
+})
+export type SampledReport = z.infer<typeof SampledReport>
+
 export const ConnectorReport = z.object({
   connector: z.string().min(1),
   status: z.enum(["ok", "partial", "failed", "skipped"]).default("ok"),
@@ -323,6 +339,8 @@ export const ConnectorReport = z.object({
     )
     .default([]),
   durationMs: z.number().nonnegative(),
+  /** Present when the recipe sets sampling: candidates seen, kept, and drops by rule. */
+  sampled: SampledReport.optional(),
   coverage: Coverage.optional(),
 })
 export type ConnectorReport = z.infer<typeof ConnectorReport>

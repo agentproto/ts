@@ -67,7 +67,17 @@ export type TaskRecord = z.infer<typeof TaskRecord>
 export const SamplingRecord = z.object({
   candidate: z.string().min(1),
   decision: z.enum(["kept", "dropped"]),
+  /** Why a candidate was dropped: `band_quota`, `domain_cap`, `no_metric` or `out_of_bands`. */
   rule: z.string().optional(),
+  /** Index of the counter band the candidate fell in. */
+  band: z.number().int().nonnegative().optional(),
+  /** Canonical URL of the candidate, so a later alias of it follows its decision. */
+  url: z.string().optional(),
+  /** Host the candidate counted against. */
+  domain: z.string().optional(),
+  seed: z.number().int().optional(),
+  connector: z.string().optional(),
+  taskId: z.string().optional(),
   at: z.iso.datetime({ offset: true }),
 })
 export type SamplingRecord = z.infer<typeof SamplingRecord>
@@ -165,6 +175,8 @@ export interface CollectStore {
   writePlan(runId: string, plan: PlanEntry[]): Promise<void>
   readPlan(runId: string): Promise<PlanEntry[] | undefined>
   appendSampling(runId: string, record: SamplingRecord): Promise<void>
+  /** Append all the records in one write: a crash leaves a prefix of them, never a reordered or interleaved set. Every record is validated first. */
+  appendSamplingBatch(runId: string, records: SamplingRecord[]): Promise<void>
   sampling(runId: string): Reader<SamplingRecord>
   appendEvent(runId: string, event: EventRecord): Promise<void>
   events(runId: string): Reader<EventRecord>

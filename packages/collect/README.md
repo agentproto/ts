@@ -82,9 +82,7 @@ filesystem (Node built-ins only).
   `withPrimaryMetric` counts only a declared primary counter. The transports are
   contracts only here (`HttpTransport`, `BrowserTransport`, `SecretsPort`,
   `TransportError`); implementations are supplied by the caller.
-- **Not implemented yet**: `Recipe.sampling` (bands, per-domain cap, seed) is
-  accepted by the schema but ignored by the engine (it emits a `warning`
-  event); it comes in a follow-up PR.
+- `Recipe.sampling` is applied by the engine (see "Recipe sampling" below).
 
 ## Rules baked into the schemas
 
@@ -262,3 +260,86 @@ replaced by `[redacted]` in the body bytes and headers of successful
 responses, and in the message, url and body of errors; a query-parameter
 secret is removed from the returned `url`, and the underlying error object is
 dropped.
+
+## Recipe sampling
+
+`recipe.sampling` thins the candidate items a connector's `parse` returns from
+listing or search tasks. Tasks of `kind: "read"` (an item fetched by URL) are
+never sampled. Without a `sampling` block nothing changes.
+
+```yaml
+sampling:
+  bands:
+    - { metric: views, min: 0, max: 999, quota: 50 }
+    - { min: 1000, max: 99999, quota: 50 }   # metric omitted: the connector's primary counter
+  keepMissingMetric: false
+  perDomainCap: 2
+  seed: 42
+```
+
+Steps, in this order, for each candidate:
+
+1. **Bands.** The candidate falls in the first band whose range contains its
+   counter value (`min` and `max` are both inclusive; either may be omitted).
+   The value comes from the observations the same parse returned for that item.
+   A candidate with no value for any band's counter is dropped with rule
+   `no_metric`, or kept outside every band when `keepMissingMetric` is true.
+   A candidate with a value that fits no band is dropped as `out_of_bands`.
+   A band keeps at most `quota` candidates (`band_quota` otherwise).
+2. **Per-domain cap.** At most `perDomainCap` kept items per host. The host is
+   the lower-cased hostname with a leading `www.` stripped (no public-suffix
+   list) of the item's canonical URL; for a `submission` it is the host of
+   `links.target` when that is a URL, else of the first `outboundLinks` entry,
+   so a submission counts against the article's site, not the aggregator's.
+   Beyond the cap the candidate is dropped as `domain_cap`. A candidate that
+   fails a rule does not use up the quota or cap of the other rule.
+3. **Seed.** When a quota or cap forces a choice, `seed` makes it
+   deterministic: within each task's candidates, a mulberry32 shuffle seeded
+   from `seed` and the task decides the order (candidates sorted by stable id
+   first), so the same recipe, seed and candidates give the same selection
+   whatever order the connector listed them in. Without a seed the first seen
+   in plan order is kept.
+
+Quotas, caps and the seed are all per connector: two connectors in one recipe
+each have their own band counters and their own per-domain counts.
+
+**Guarantee.** Fetching and parsing run in parallel, but outcomes are committed
+(sampling, dedup, writes) strictly in plan order (`order` of the task, a
+follow-up task right after its parent). A terminal failure or skip releases its
+turn; a task in transport fallback keeps it. So the kept set does not depend on
+worker count, latency or which transport answered first: it is identical to a
+`workers: 1` run.
+
+Results held behind a slow task are bounded: a task is launched only while
+fewer than `lookahead` tasks are live (default `4 * workers`, set it in the
+recipe) and its slot is within `lookahead` positions of the commit cursor. The
+head of the order and a task in transport fallback always launch, so the window
+cannot stall a run. A connector stopped by a challenge commits nothing more:
+work of it that was waiting for its turn or arrives late writes and samples
+nothing, creates no follow-up task, and its task is recorded as skipped with
+reason `challenge`. A cancelled run or a failed store stops further commits; a
+task that was already the head when the run was cancelled still completes.
+
+**Which candidates are sampled.** An item that already exists in the store
+(same id or same canonical URL) is a known item: it is not sampled, uses no
+quota or cap, and gets its new observation as usual. Among the new ones, a
+repeated id and several ids sharing one canonical URL form one candidate, so
+aliases cannot use several slots; it is decided on the member with the highest
+counter (ties: smaller URL, then smaller id), and a later alias of a decided
+candidate's own URL follows that decision without a line of its own.
+
+Every distinct candidate gets exactly one line in `runs/<id>/sampling.jsonl`:
+`candidate`, `decision` (`kept` or `dropped`), `rule` when dropped, `band`,
+`url`, `domain`, `seed`, `connector`, `taskId`, `at`. A dropped candidate writes no
+item, no observation, no pickup, no seen key, and no actor only it
+referenced, and is not counted as new, so coverage counts kept items only.
+
+A task's lines are written in one append (`appendSamplingBatch`) before any
+counter moves; if that write fails the run stops with a run error and nothing of
+that task is ingested. On `resume` the counters are rebuilt from
+`sampling.jsonl`, and a task that has its decisions but is not `done` reuses
+them by candidate id; a candidate that is new after the refetch is decided
+fresh. A decision kept for a candidate that a changed page no longer returns
+stays reserved against its quota or cap (accepted: the page changed between
+attempts). The report adds, per connector,
+`sampled: { candidates, kept, dropped: { [rule]: n } }`.
