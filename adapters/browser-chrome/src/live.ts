@@ -1148,7 +1148,7 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
   async function createTab(entry: LiveEntry, url: string): Promise<string> {
     if (entry.targets.size === 0) {
       // No agent window yet (or the user closed it): open a dedicated one.
-      const { targetId } = await entry.conn.send<{ targetId: string }>("Target.createTarget", { url, newWindow: true })
+      const { targetId } = await entry.conn.send<{ targetId: string }>("Target.createTarget", { url, newWindow: true, background: true })
       entry.targets.add(targetId)
       const windowId = await windowOf(entry, targetId)
       if (windowId !== undefined) entry.windowId = windowId
@@ -1170,11 +1170,12 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
         forget(entry, opened)
       }
     }
-    // Fallback: activate one of our tabs first so it becomes the agent window; the windowId check catches a race.
+    // Fallback: create the target in the background. Nothing is activated here: raising a tab would take the
+    // focus from whichever window the user (or another agent) is working in. The windowId check below catches
+    // a tab that landed in another window and closes it again. If another window keeps the focus, both attempts land
+    // there and the call throws (the price of never raising a window); the caller can retry once the focus has moved.
     for (let attempt = 0; attempt < 2; attempt++) {
-      const anchor = entry.targets.values().next().value as string
-      await entry.conn.send("Target.activateTarget", { targetId: anchor })
-      const { targetId } = await entry.conn.send<{ targetId: string }>("Target.createTarget", { url })
+      const { targetId } = await entry.conn.send<{ targetId: string }>("Target.createTarget", { url, background: true })
       entry.targets.add(targetId)
       if (entry.windowId === undefined) return targetId
       const windowId = await windowOf(entry, targetId)
@@ -1183,7 +1184,7 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
       forget(entry, targetId)
       if (entry.targets.size === 0) return createTab(entry, url)
     }
-    throw new Error("[chrome-live] the new tab kept opening outside the agent window (another Chrome window has focus); it was closed again, retry")
+    throw new Error("[chrome-live] the new tab kept opening outside the agent window (another Chrome window has focus); it was closed again, retry once that window no longer has the focus")
   }
 
   function makeInstance(entry: LiveEntry, wasAlreadyRunning: boolean, launchOpts: ChromeLiveLaunchOptions = {}): ChromeLiveInstance {
@@ -1438,8 +1439,8 @@ export function createChromeLiveProvider(config: ChromeLiveProviderConfig = {}):
 
       async newTabOwnedTarget(url?: string): Promise<{ targetId: string; url: string }> {
         if (entry.state !== "open" || entry.conn.closed) throw new ChromeDisconnectedError(entry.url, "the connection dropped")
-        // attach() always opens a FRESH tab (createTab: activate one of our
-        // tabs first, so the new one lands in the agent window; driver-less
+        // attach() always opens a FRESH tab (createTab: opened from one of our
+        // tabs, else created in the background; nothing is activated; driver-less
         // initialUrl still records the url).
         const driver = (await this.attach({ ...(url ? { initialUrl: url } : {}) })) as ChromeLiveDriver
         return { targetId: driver.target.id, url: driver.target.url ?? url ?? "about:blank" }

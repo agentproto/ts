@@ -15,7 +15,7 @@ export interface FakeCommand {
 export interface FakeChromeOptions {
   /** "allow": answers at once; "hold": the handshake never completes; "reject": 403; "silent": opens but never answers. */
   consent?: "allow" | "hold" | "reject" | "silent"
-  /** After Target.activateTarget, focus jumps back to the user's window (a user clicking elsewhere). */
+  /** The user's window keeps the focus: a tab created without newWindow lands there, and an activation does not move it. */
   stealFocus?: boolean
   /** `window.open` from an agent tab opens a tab in THAT tab's window (what Chrome does), with `openerId`. Default off: no tab opens. Either way a `noopener` call answers null, as in Chrome. */
   windowOpen?: boolean
@@ -204,8 +204,10 @@ export async function startFakeChrome(options: FakeChromeOptions = {}): Promise<
         case "Target.createTarget": {
           const id = `agent-target-${++nextTarget}`
           created.add(id)
-          const windowId = msg.params?.newWindow ? ++nextWindow : lastActiveWindow
-          lastActiveWindow = windowId
+          // a tab created without newWindow lands in the last active window, which stealFocus keeps on the user's
+          const windowId = msg.params?.newWindow ? ++nextWindow : fake.options.stealFocus ? USER_WINDOW : lastActiveWindow
+          // a background tab does not make its window the active one (a new window still does: it is raised on creation)
+          if (msg.params?.newWindow || !msg.params?.background) lastActiveWindow = windowId
           fake.targets.set(id, { windowId, url: String(msg.params?.url ?? ""), created: true })
           return reply(msg.id, undefined, { targetId: id })
         }
