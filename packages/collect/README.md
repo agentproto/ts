@@ -38,8 +38,9 @@ filesystem (Node built-ins only).
   `blocked`/`empty` error moves a task to the next transport (the report
   records the escalation); other statuses are `http` failures with no
   fallback. A challenge page is a hard stop: the raw is kept, there is no
-  fallback, the connector is stopped for the rest of the run and its queued
-  tasks are `skipped` with reason `challenge`.
+  fallback, no new request is started for the connector for the rest of the run (requests
+  already in flight finish) and its queued tasks are `skipped` with reason
+  `challenge`.
   The whole root plan is written first in one atomic `plan.jsonl`. The engine
   stores every raw, parses and validates every raw of a task before writing
   anything, dedups on native id and canonical URL (the same exact text under two URLs keeps two items that share one `contentId`; the seen index maps

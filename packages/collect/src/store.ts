@@ -201,7 +201,9 @@ export class StoreVersionError extends Error {
 /**
  * Drop the copy a task writes again when it is redone after a crash: records
  * tagged with both `runId` and `taskId` are kept once per `key`, the first one
- * wins; untagged records always pass.
+ * wins; untagged records always pass. The key leaves out timestamps on purpose
+ * (a redone task fetches again and gets new ones), so two readings of one item
+ * in one task with identical values collapse to one: a known trade-off.
  */
 export function dropRedone<T>(source: Reader<T>, tag: (r: T) => string | undefined): Reader<T> {
   return {
