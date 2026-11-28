@@ -1,8 +1,9 @@
 # @agentproto/collect
 
 Building blocks for collecting public posts, articles and metrics with
-provenance. This first release is the data layer only. It is pure: no
-filesystem, no network, one runtime dependency (`zod`).
+provenance. The root entry is pure: no filesystem, no network, one runtime
+dependency (`zod`). Only the `@agentproto/collect/node` entry touches the
+filesystem (Node built-ins only).
 
 ## What is in it
 
