@@ -56,5 +56,7 @@ export type {
   CodexRateLimitsInput,
   CodexRateLimitWindow,
 } from "./readers/codex.js"
+export { createCodexQuotaReader, quotaFromCodexUsagePayload } from "./readers/codex-usage.js"
+export type { CodexQuotaReaderOptions, CodexUsageLogin } from "./readers/codex-usage.js"
 export { createMoonshotQuotaReader } from "./readers/moonshot.js"
 export { createOpenRouterQuotaReader } from "./readers/openrouter.js"

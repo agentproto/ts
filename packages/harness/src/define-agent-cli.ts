@@ -347,7 +347,12 @@ export function createAgentCliRuntime(
         // channel. The host already verified the login is present (fail-loud)
         // before resolving this spec.
         // An external subscription stops here: the scrub above is the entire
-        // effect. Only the inject-a-credential path continues below.
+        // effect (plus, for a profile with its own login home, pointing the
+        // adapter's state-home env var at it: a path, never a secret). Only the
+        // inject-a-credential path continues below.
+        if (authSpec.externalCredential && authSpec.loginHome && definition.stateHome) {
+          env[definition.stateHome.env] = authSpec.loginHome
+        }
         if (!authSpec.externalCredential) {
         // Fail-fast: the credential is resolved by the HOST from a named
         // config/store ref, never read ambiently — if it didn't resolve,

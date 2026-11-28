@@ -60,6 +60,8 @@ export interface CreateAuthProfileInput {
   /** Pin one sub-account (org / workspace / project) of the account — the
    *  `credential` or the `source`. See `subaccounts.ts`. */
   subaccount?: SubaccountPin
+  /** Codex login home for a `source: "codex"` profile (absolute or `~/…`). */
+  codexHome?: string
   /** Optional human-readable name. */
   label?: string
   /** Optional explicit credential-store slot. Omitted ⇒ derived from
@@ -88,6 +90,8 @@ export interface CreatedAuthProfile {
   source?: string
   /** The pinned sub-account, when the profile has one. */
   subaccount?: SubaccountPin
+  /** The Codex login home, when the profile has one. */
+  codexHome?: string
   label?: string
   /** Provenance stamped at import time, when given. */
   origin?: string
@@ -143,6 +147,7 @@ export interface ValidatedCreateInput {
   credential?: string
   source?: string
   subaccount?: SubaccountPin
+  codexHome?: string
   label?: string
   credentialRef?: string
   origin?: string
@@ -210,6 +215,13 @@ export function validateCreateInput(input: CreateAuthProfileInput): ValidatedCre
     )
   }
 
+  if (source === "codex" && subaccount && subaccount.kind !== "workspace") {
+    throw new AuthProfileValidationError(
+      `a Codex profile pins a "workspace" (got kind "${subaccount.kind}")`,
+    )
+  }
+  const codexHome = input.codexHome !== undefined ? validateCodexHome(input.codexHome, source) : undefined
+
   if (method === "api-key") {
     if (source) {
       if (!provider) {
@@ -272,11 +284,28 @@ export function validateCreateInput(input: CreateAuthProfileInput): ValidatedCre
     ...(credential ? { credential } : {}),
     ...(source ? { source } : {}),
     ...(subaccount ? { subaccount } : {}),
+    ...(codexHome ? { codexHome } : {}),
     ...(label ? { label } : {}),
     ...(credentialRef ? { credentialRef } : {}),
     ...(origin ? { origin } : {}),
     ...(routes.length ? { routes } : {}),
   }
+}
+
+/** A Codex home must be a non-blank absolute path (or `~/…`) and only makes
+ *  sense on a `source: "codex"` profile. Returns the trimmed value. */
+function validateCodexHome(value: string, source: string | undefined): string {
+  if (source !== "codex") {
+    throw new AuthProfileValidationError(`codexHome is only valid on a profile whose source is "codex"`)
+  }
+  const home = typeof value === "string" ? value.trim() : ""
+  if (!home) throw new AuthProfileValidationError("codexHome must not be blank")
+  if (!(home === "~" || home.startsWith("~/") || home.startsWith("/") || /^[A-Za-z]:[\\/]/.test(home))) {
+    throw new AuthProfileValidationError(
+      `codexHome must be an absolute path or start with "~/" (got "${home}")`,
+    )
+  }
+  return home
 }
 
 /**
@@ -365,6 +394,7 @@ export async function createAuthProfile(
       method: v.method,
       source: v.source,
       ...(v.subaccount ? { subaccount: v.subaccount } : {}),
+      ...(v.codexHome ? { codexHome: v.codexHome } : {}),
       ...(v.label ? { label: v.label } : {}),
       ...(v.origin ? { origin: v.origin } : {}),
       ...(v.routes ? { routes: v.routes } : {}),
@@ -376,6 +406,7 @@ export async function createAuthProfile(
       method: profile.method,
       source: profile.source,
       ...(profile.subaccount ? { subaccount: profile.subaccount } : {}),
+      ...(profile.codexHome ? { codexHome: profile.codexHome } : {}),
       ...(profile.label ? { label: profile.label } : {}),
       ...(profile.origin ? { origin: profile.origin } : {}),
       ...(profile.routes ? { routes: profile.routes } : {}),
@@ -543,6 +574,8 @@ export interface UpdateAuthProfileInput {
   label?: string | null
   /** New windowed spend cap, or `null` to clear it. */
   costBudget?: CostBudget | null
+  /** New Codex login home (`source: "codex"` profiles only), or `null` to clear. */
+  codexHome?: string | null
 }
 
 /**
@@ -568,9 +601,10 @@ export async function updateAuthProfile(
 
   const hasLabel = Object.prototype.hasOwnProperty.call(patch, "label")
   const hasCostBudget = Object.prototype.hasOwnProperty.call(patch, "costBudget")
-  if (!hasLabel && !hasCostBudget) {
+  const hasCodexHome = Object.prototype.hasOwnProperty.call(patch, "codexHome")
+  if (!hasLabel && !hasCostBudget && !hasCodexHome) {
     throw new AuthProfileValidationError(
-      "at least one of label or costBudget is required",
+      "at least one of label or costBudget (or codexHome on a codex profile) is required",
     )
   }
 
@@ -609,8 +643,18 @@ export async function updateAuthProfile(
     throw new AuthProfileValidationError(`no profile with id "${trimmed}"`)
   }
 
-  const { label: _dropLabel, costBudget: _dropCostBudget, ...rest } = profile
+  let nextCodexHome: string | undefined
+  if (hasCodexHome && patch.codexHome !== null) {
+    nextCodexHome = validateCodexHome(patch.codexHome as string, profile.source)
+  }
+
+  const { label: _dropLabel, costBudget: _dropCostBudget, codexHome: _dropCodexHome, ...rest } = profile
   const updated: AuthProfile = { ...rest }
+  if (hasCodexHome) {
+    if (nextCodexHome !== undefined) updated.codexHome = nextCodexHome
+  } else if (profile.codexHome !== undefined) {
+    updated.codexHome = profile.codexHome
+  }
   if (hasLabel) {
     if (nextLabel !== undefined) updated.label = nextLabel
   } else if (profile.label !== undefined) {

@@ -210,3 +210,69 @@ describe("readQuotaStatus", () => {
     })
   })
 })
+
+describe("readQuotaStatus: codex profiles", () => {
+  const codexProfile = (o: Partial<AuthProfile> = {}): AuthProfile =>
+    ({
+      id: "codex-solo",
+      endpoint: "openai",
+      method: "oauth-bearer",
+      source: "codex",
+      codexHome: "/fake/home",
+      subaccount: { kind: "workspace", id: "acct-solo" },
+      ...o,
+    }) as AuthProfile
+  const BODY = {
+    rate_limit: {
+      primary_window: { used_percent: 10, limit_window_seconds: 18000, reset_at: 1_795_000_000 },
+      secondary_window: { used_percent: 40, limit_window_seconds: 604800, reset_at: 1_795_500_000 },
+    },
+  }
+
+  it("the default registry has a reader for a source-codex profile", () => {
+    const reader = createQuotaReaderRegistry().find({
+      profileRef: "x",
+      endpoint: "openai",
+      method: "oauth-bearer",
+      source: "codex",
+    })
+    expect(reader?.id).toBe("codex-wham-usage")
+  })
+
+  it("reads the login from the profile's codexHome and pins its workspace", async () => {
+    const homes: string[] = []
+    let header: string | undefined
+    const result = await readQuotaStatus(
+      { profileRef: "codex-solo" },
+      {
+        getProfile: async () => codexProfile(),
+        readCodexLogin: async (home) => {
+          homes.push(home)
+          return { accessToken: "FAKE-TOKEN", accountId: "acct-login", workspaces: [] }
+        },
+        fetchImpl: (async (_u: string, init: RequestInit) => {
+          header = (init.headers as Record<string, string>)["ChatGPT-Account-Id"]
+          return new Response(JSON.stringify(BODY), { status: 200 })
+        }) as unknown as typeof fetch,
+        now: () => FIXED_NOW,
+        accountHealth: { get: async () => undefined, list: async () => [], mark: async () => ({}) as never, clear: async () => false },
+      },
+    )
+    expect(homes).toEqual(["/fake/home"])
+    expect(header).toBe("acct-solo")
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.status.basis).toBe("probe")
+      expect(result.status.windows.map((w) => w.id)).toEqual(["5h", "7d"])
+      expect(JSON.stringify(result)).not.toContain("FAKE-TOKEN")
+    }
+  })
+
+  it("a missing login is an explicit credential_missing", async () => {
+    const result = await readQuotaStatus(
+      { profileRef: "codex-solo" },
+      { getProfile: async () => codexProfile(), readCodexLogin: async () => undefined },
+    )
+    expect(result).toMatchObject({ ok: false, error: "credential_missing" })
+  })
+})

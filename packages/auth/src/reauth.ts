@@ -128,7 +128,14 @@ export interface ReauthTarget {
 /** How the interactive login is run. The login stays interactive: it is run
  *  with inherited stdio, the rest of the flow is automated around it. */
 export type ReauthLoginPlan =
-  | { kind: "command"; command: string; args: string[]; description: string }
+  | {
+      kind: "command"
+      command: string
+      args: string[]
+      description: string
+      /** Extra env for the command (e.g. a per-profile login home). Paths only. */
+      env?: Record<string, string>
+    }
   /** The provider's CLI cannot be driven from here: say what to run instead. */
   | { kind: "manual"; instructions: string }
 

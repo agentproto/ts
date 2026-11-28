@@ -42,6 +42,7 @@ import { homedir } from "node:os"
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import {
   createAuthProfile,
+  listAuthProfiles,
   type CreateAuthProfileInput,
   type CreatedAuthProfile,
   type ProfileProvisionDeps,
@@ -67,6 +68,9 @@ export interface DiscoveredCredential {
   /** Non-secret human locator — e.g. "OPENROUTER_API_KEY in ~/.hermes/config.yaml".
    *  Says WHERE the secret is, never WHAT it is. */
   hint: string
+  /** Codex only: the absolute login home, when the credential was found in a
+   *  profile's own home rather than the default one. A path, never a secret. */
+  codexHome?: string
 }
 
 /**
@@ -89,6 +93,10 @@ export interface CredentialDiscoveryDeps {
   platform?: NodeJS.Platform
   /** Non-secret warning sink for a malformed/unreadable source. Default: no-op. */
   warn?: (message: string) => void
+  /** Extra Codex login homes to probe (a profile's `codexHome`; `~/` accepted),
+   *  each reported with its path. The default home (`$CODEX_HOME` when absolute,
+   *  else `~/.codex`) is always probed and never reported twice. */
+  codexHomes?: readonly string[]
 }
 
 interface ResolvedDeps {
@@ -98,6 +106,7 @@ interface ResolvedDeps {
   keychainLookup: (service: string) => string
   platform: NodeJS.Platform
   warn: (message: string) => void
+  codexHomes: readonly string[]
 }
 
 /** A Node fs error for a file that does not exist — a normal "not found", not a
@@ -173,13 +182,14 @@ const CLAUDE_CODE_JSON_PATH = "claudeAiOauth.accessToken"
 const CLAUDE_CODE_FILE = "~/.claude/.credentials.json"
 
 /** File-based OAuth logins — mirror `codexRecipe` / `geminiRecipe`. */
+const CODEX_DEFAULT_FILE = "~/.codex/auth.json"
 const FILE_OAUTH_PROBES: ReadonlyArray<{
   origin: CredentialOrigin
   endpoint: string
   file: string
   jsonPath: string
 }> = [
-  { origin: "codex", endpoint: "openai", file: "~/.codex/auth.json", jsonPath: "tokens.access_token" },
+  { origin: "codex", endpoint: "openai", file: CODEX_DEFAULT_FILE, jsonPath: "tokens.access_token" },
   { origin: "gemini", endpoint: "google", file: "~/.gemini/oauth_creds.json", jsonPath: "access_token" },
 ]
 
@@ -225,6 +235,7 @@ function resolveDeps(deps: CredentialDiscoveryDeps): ResolvedDeps {
           }),
     platform,
     warn: deps.warn ?? (() => {}),
+    codexHomes: deps.codexHomes ?? [],
   }
 }
 
@@ -241,6 +252,7 @@ export function discoverCredentials(
 
   probeClaudeCode(d, found)
   for (const probe of FILE_OAUTH_PROBES) probeFileOauth(d, probe, found)
+  probeCodexHomes(d, found)
   probeHermes(d, found)
   probeEnv(d, found)
 
@@ -290,19 +302,55 @@ function probeFileOauth(
   probe: { origin: CredentialOrigin; endpoint: string; file: string; jsonPath: string },
   out: DiscoveredCredential[],
 ): void {
+  const file = probe.origin === "codex" ? defaultCodexAuthFile(d) : probe.file
   try {
-    const raw = d.readFile(expandHome(d.homeDir, probe.file))
+    const raw = d.readFile(expandHome(d.homeDir, file))
     if (jsonFieldPresent(raw, probe.jsonPath)) {
       out.push({
         endpoint: probe.endpoint,
         method: "oauth-bearer",
         origin: probe.origin,
-        hint: `${probe.origin} OAuth token in ${probe.file}`,
+        hint: `${probe.origin} OAuth token in ${file}`,
       })
     }
   } catch (err) {
     if (!isMissingFile(err)) {
-      d.warn(`skipping ${probe.file}: ${errText(err)}`)
+      d.warn(`skipping ${file}: ${errText(err)}`)
+    }
+  }
+}
+
+/** Codex's default login file: `$CODEX_HOME/auth.json` when that is absolute
+ *  (as codex itself reads it), else `~/.codex/auth.json`. */
+function defaultCodexAuthFile(d: ResolvedDeps): string {
+  const fromEnv = d.env.CODEX_HOME
+  return fromEnv && fromEnv.startsWith("/") ? `${fromEnv.replace(/\/$/, "")}/auth.json` : CODEX_DEFAULT_FILE
+}
+
+/** Absolute `<home>/auth.json` of a (possibly `~/`) codex home. */
+function codexHomeAuthFile(d: ResolvedDeps, home: string): string {
+  return `${expandHome(d.homeDir, home).replace(/\/$/, "")}/auth.json`
+}
+
+function probeCodexHomes(d: ResolvedDeps, out: DiscoveredCredential[]): void {
+  const defaultFile = expandHome(d.homeDir, defaultCodexAuthFile(d))
+  const seen = new Set<string>([defaultFile])
+  for (const home of d.codexHomes) {
+    const file = codexHomeAuthFile(d, home)
+    if (seen.has(file)) continue
+    seen.add(file)
+    try {
+      if (jsonFieldPresent(d.readFile(file), "tokens.access_token")) {
+        out.push({
+          endpoint: "openai",
+          method: "oauth-bearer",
+          origin: "codex",
+          codexHome: file.slice(0, -"/auth.json".length),
+          hint: `codex OAuth token in ${file}`,
+        })
+      }
+    } catch (err) {
+      if (!isMissingFile(err)) d.warn(`skipping ${file}: ${errText(err)}`)
     }
   }
 }
@@ -482,6 +530,9 @@ export interface ImportCredentialArgs {
   id?: string
   /** Optional human label. */
   label?: string
+  /** Codex only: import the login found in this home (absolute or `~/…`) as a
+   *  profile carrying `codexHome`, instead of the default login. */
+  codexHome?: string
 }
 
 /**
@@ -504,10 +555,22 @@ export async function importDiscoveredCredential(
   ioDeps: CredentialDiscoveryDeps = {},
 ): Promise<CreatedAuthProfile> {
   const plan = planCredentialImport(args.origin, args.endpoint)
+  const codexHome = args.codexHome?.trim() || undefined
+  if (codexHome !== undefined && args.origin !== "codex") {
+    throw new CredentialImportError(`codexHome only applies to origin "codex", not "${args.origin}"`)
+  }
 
   // Only import what discovery currently sees — never fabricate a profile.
-  const present = discoverCredentials(ioDeps).some(
-    (c) => c.origin === args.origin && c.endpoint === plan.endpoint,
+  const discovered = discoverCredentials({
+    ...ioDeps,
+    ...(codexHome !== undefined ? { codexHomes: [...(ioDeps.codexHomes ?? []), codexHome] } : {}),
+  })
+  const wantedHome = codexHome !== undefined ? codexHomeAuthFile(resolveDeps(ioDeps), codexHome).slice(0, -"/auth.json".length) : undefined
+  const present = discovered.some(
+    (c) =>
+      c.origin === args.origin &&
+      c.endpoint === plan.endpoint &&
+      (wantedHome === undefined || c.codexHome === wantedHome),
   )
   if (!present) {
     throw new CredentialImportError(
@@ -526,7 +589,10 @@ export async function importDiscoveredCredential(
   }
 
   if (plan.method === "oauth-bearer") {
-    return createAuthProfile({ ...base, source: plan.source }, provisionDeps)
+    return createAuthProfile(
+      { ...base, source: plan.source, ...(codexHome !== undefined ? { codexHome } : {}) },
+      provisionDeps,
+    )
   }
   // api-key COPY — resolve the plaintext at the daemon, hand it straight to the
   // store, never return it.
@@ -570,7 +636,8 @@ export function registerCredentialDiscoveryTools(server: McpServer): void {
     async () => {
       try {
         const warnings: string[] = []
-        const credentials = discoverCredentials({ warn: (m) => warnings.push(m) })
+        const codexHomes = (await listAuthProfiles()).flatMap((p) => (p.codexHome ? [p.codexHome] : []))
+        const credentials = discoverCredentials({ warn: (m) => warnings.push(m), codexHomes })
         return text({
           credentials,
           ...(warnings.length ? { warnings } : {}),

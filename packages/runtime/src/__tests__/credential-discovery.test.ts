@@ -426,3 +426,70 @@ describe("INVARIANT: import never returns the copied secret", () => {
     expect(JSON.stringify(created)).not.toContain(SENTINEL)
   })
 })
+
+describe("discoverCredentials — codex homes", () => {
+  const login = JSON.stringify({ tokens: { access_token: "codex-tok" } })
+
+  it("honours an absolute CODEX_HOME for the default probe instead of ~/.codex", () => {
+    const { deps: d } = deps({
+      env: { CODEX_HOME: "/data/codex" },
+      readFile: fakeReadFile({ "/data/codex/auth.json": login, [`${HOME}/.codex/auth.json`]: login }),
+    })
+    const codex = discoverCredentials(d).filter((c) => c.origin === "codex")
+    expect(codex).toHaveLength(1)
+    expect(codex[0]!.hint).toContain("/data/codex/auth.json")
+    expect(codex[0]).not.toHaveProperty("codexHome")
+  })
+
+  it("probes each extra codex home, reporting it with its (non-secret) path", () => {
+    const { deps: d } = deps({
+      codexHomes: ["~/.codex-solo", "/data/team"],
+      readFile: fakeReadFile({
+        [`${HOME}/.codex/auth.json`]: login,
+        [`${HOME}/.codex-solo/auth.json`]: login,
+        "/data/team/auth.json": JSON.stringify({ tokens: {} }),
+      }),
+    })
+    const codex = discoverCredentials(d).filter((c) => c.origin === "codex")
+    expect(codex.map((c) => c.codexHome)).toEqual([undefined, `${HOME}/.codex-solo`])
+    expect(JSON.stringify(codex)).not.toContain("codex-tok")
+  })
+
+  it("an extra home equal to the default one is not reported twice", () => {
+    const { deps: d } = deps({
+      codexHomes: ["~/.codex"],
+      readFile: fakeReadFile({ [`${HOME}/.codex/auth.json`]: login }),
+    })
+    expect(discoverCredentials(d).filter((c) => c.origin === "codex")).toHaveLength(1)
+  })
+
+  it("imports a codex home as a profile carrying codexHome (and only if it has a login)", async () => {
+    const { deps: provision } = makeProvisionDeps()
+    const io = {
+      homeDir: HOME,
+      env: {},
+      platform: "linux" as const,
+      readFile: fakeReadFile({ [`${HOME}/.codex-solo/auth.json`]: login }),
+    }
+    const created = await importDiscoveredCredential(
+      { origin: "codex", endpoint: "openai", id: "codex-solo", codexHome: "~/.codex-solo" },
+      provision,
+      io,
+    )
+    expect(created).toMatchObject({ id: "codex-solo", source: "codex", codexHome: "~/.codex-solo" })
+    await expect(
+      importDiscoveredCredential(
+        { origin: "codex", endpoint: "openai", id: "codex-none", codexHome: "~/.codex-none" },
+        provision,
+        io,
+      ),
+    ).rejects.toBeInstanceOf(CredentialImportError)
+  })
+
+  it("refuses codexHome for another origin", async () => {
+    const { deps: provision } = makeProvisionDeps()
+    await expect(
+      importDiscoveredCredential({ origin: "gemini", endpoint: "google", codexHome: "~/.x" }, provision, {}),
+    ).rejects.toBeInstanceOf(CredentialImportError)
+  })
+})

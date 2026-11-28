@@ -101,9 +101,9 @@ import {
   resolveClaudeCodeOauthToken,
   verifyLocalLoginPresent,
 } from "./claude-code-oauth-source.js"
+import { readHostLoginJson, resolveCodexProfileLogin } from "./codex-profile-login.js"
 import { resolveProfileSubaccount, type ResolvedProfileSubaccount } from "./subaccount-resolution.js"
 import { getProviderKey } from "./providers-store.js"
-import { readRecipeLoginJson } from "@agentproto/secrets/provision/recipe"
 import {
   buildLoginCopy,
   createBoxLoginRefresher,
@@ -1164,6 +1164,7 @@ export async function resolveAccessProfileAuth(
   let subscriptionCredentialSource: CredentialSource | undefined
   let apiKeyCredential: string | undefined
   let externalSubscriptionVerified = false
+  let codexLoginHome: string | undefined
   // File-based (external) subscription — codex/gemini/mastracode/opencode:
   // the CLI reads its OWN login file, so a source-backed profile injects
   // NOTHING. Verify the login is present (fail-loud) and let
@@ -1207,11 +1208,19 @@ export async function resolveAccessProfileAuth(
       // observed live: mastracode + the codex-local profile resolved the
       // "codex" recipe and failed with "provider 'codex' has no method
       // 'openai-oauth'" instead of checking mastracode's own auth.json.
-      await verifyLocalLoginPresent(
-        adapter,
-        adapter,
-        subscriptionOauthMethodId(authDescriptor, profile.endpoint),
-      )
+      // A codex profile with its own login home (and/or a workspace pin) is
+      // verified against THAT login; any other profile keeps the adapter-wide
+      // check. The home only reaches the spawn through `loginHome`.
+      const own = adapter === "codex" ? await resolveCodexProfileLogin(profile) : { handled: false as const }
+      if (own.handled) {
+        codexLoginHome = own.loginHome
+      } else {
+        await verifyLocalLoginPresent(
+          adapter,
+          adapter,
+          subscriptionOauthMethodId(authDescriptor, profile.endpoint),
+        )
+      }
       externalSubscriptionVerified = true
     } catch (err) {
       if (err instanceof SubscriptionSourceError) {
@@ -1278,6 +1287,7 @@ export async function resolveAccessProfileAuth(
       ...(subscriptionCredential !== undefined ? { subscriptionCredential } : {}),
       ...(subscriptionCredentialSource !== undefined ? { subscriptionCredentialSource } : {}),
       ...(externalSubscriptionVerified ? { externalSubscriptionVerified } : {}),
+      ...(codexLoginHome !== undefined ? { loginHome: codexLoginHome } : {}),
       ...(apiKeyCredential !== undefined ? { apiKeyConfigCredential: apiKeyCredential } : {}),
       ...(subaccount ? subaccount.authInputs : {}),
     })
@@ -1306,7 +1316,7 @@ export async function resolveAccessProfileAuth(
       ...(profile.label !== undefined ? { label: profile.label } : {}),
       endpoint: profile.endpoint,
       method: profile.method,
-      ...(subaccount ? { subaccount: subaccount.pin } : {}),
+      ...(subaccount ? { subaccount: subaccount.pin } : profile.source === "codex" && profile.subaccount ? { subaccount: profile.subaccount } : {}),
     },
   }
 }
@@ -6774,6 +6784,7 @@ async function spawnAgentSessionOnce(
         // must exist INSIDE the box before its own fail-loud verify runs —
         // see `box-login-bridge.ts`. Absent for every bearer/api-key spawn.
         ...(boxLogin ? { boxLogin } : {}),
+        ...(boxLogin && authSpec?.loginHome !== undefined ? { hostLoginHome: authSpec.loginHome } : {}),
         // PLAN-C — the resolved spec rides along so `env.autoPassthrough`
         // can inject the credential's env-var NAME into `env.passthrough`
         // (never the value) before the box boots.
@@ -7842,6 +7853,8 @@ export async function bootSandboxAgentSession(opts: {
    *  verify: the stamp is applied ONLY after a successful write, so a box
    *  never spawns unauthenticated on a copy that never landed. */
   boxLogin?: BoxLoginDecl
+  /** Host login home to copy the box login from (see `uploadBoxLoginCopy`). */
+  hostLoginHome?: string
   /** The HOST-resolved spawn-time role (`role.name`), forwarded onto the
    *  BOX's own `agent_start` so the box daemon resolves the session's role
    *  the same way the host did — its delegation gate (`denyTools` on the
@@ -8609,13 +8622,18 @@ export async function bootSandboxAgentSession(opts: {
   if (opts.boxLogin && opts.auth?.mode === "subscription" && handle.defaultCwd && host.writeFile && !isDeviceBox) {
     const decl = opts.boxLogin
     const writeFile = host.writeFile
-    const uploaded = await uploadBoxLoginCopy({ decl, homeDir: handle.defaultCwd, writeFile })
+    const uploaded = await uploadBoxLoginCopy({
+      decl,
+      homeDir: handle.defaultCwd,
+      writeFile,
+      ...(opts.hostLoginHome !== undefined ? { hostLoginHome: opts.hostLoginHome } : {}),
+    })
     if (uploaded.ok) {
       boxLoginUpload = { boxPath: uploaded.boxPath, digest: uploaded.digest }
       refreshBoxLogin = createBoxLoginRefresher({
         decl,
         path: uploaded.boxPath,
-        read: () => readRecipeLoginJson(decl.recipe, decl.methodId),
+        read: () => readHostLoginJson(decl, opts.hostLoginHome),
         write: writeFile,
         digest: uploaded.digest,
       })
@@ -8970,10 +8988,14 @@ export async function uploadBoxLoginCopy(opts: {
   /** The provider's `defaultCwd` — the box home the relative path joins onto. */
   homeDir: string
   writeFile: (path: string, data: Uint8Array) => Promise<void>
+  /** Host login home of a profile with its own (`AuthProfile.codexHome`): the
+   *  copy is read from `<hostLoginHome>/auth.json` instead of the recipe's
+   *  default file. The box path is unchanged. */
+  hostLoginHome?: string
 }): Promise<{ ok: true; boxPath: string; digest: string } | { ok: false; message: string }> {
   let raw: string
   try {
-    raw = await readRecipeLoginJson(opts.decl.recipe, opts.decl.methodId)
+    raw = await readHostLoginJson(opts.decl, opts.hostLoginHome)
   } catch {
     return {
       ok: false,

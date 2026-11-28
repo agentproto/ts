@@ -4,7 +4,10 @@
  * and cannot claim. Fixtures carry fake tokens and example.test identities.
  */
 
-import { afterEach, describe, expect, it } from "vitest"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { profileAuthStatus, registerReauthAdapter, unregisterReauthAdapter } from "@agentproto/auth"
 import { createClaudeCodeReauthAdapter, parseClaudeCodeLogin } from "../reauth/claude-code.js"
 import { createCodexReauthAdapter, parseCodexLogin } from "../reauth/codex.js"
@@ -156,5 +159,40 @@ describe("verify", () => {
     const v = await run(undefined, geminiDoc(), createGeminiReauthAdapter)
     expect(v.status).toBe("verified")
     expect(v.checked.join("\n")).toMatch(/now exists where none was stored/)
+  })
+})
+
+
+describe("codex: a profile with its own login home", () => {
+  const withHome = (dir: string) => ({
+    source: "codex",
+    profile: { id: "codex-solo", endpoint: "openai", method: "oauth-bearer" as const, source: "codex", codexHome: dir },
+  })
+  let dir: string
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "reauth-codex-home-"))
+  })
+  afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  it("inspect reads <codexHome>/auth.json, not the default login", async () => {
+    writeFileSync(join(dir, "auth.json"), JSON.stringify(codexDoc({ account_id: "acct_solo" })))
+    const info = await createCodexReauthAdapter().inspect(withHome(dir))
+    expect(info).toMatchObject({ loggedIn: true, id: "acct_solo" })
+  })
+
+  it("inspect reports no login when that home is empty", async () => {
+    const info = await createCodexReauthAdapter().inspect(withHome(dir))
+    expect(info.loggedIn).toBe(false)
+  })
+
+  it("the login command runs with CODEX_HOME set to that home", () => {
+    const plan = createCodexReauthAdapter().plan(withHome(dir), { loggedIn: false })
+    expect(plan).toMatchObject({ kind: "command", command: "codex", args: ["login"], env: { CODEX_HOME: dir } })
+    expect(plan.kind === "command" && plan.description).toContain(dir)
+  })
+
+  it("without a codexHome the plan is unchanged (no env)", () => {
+    const plan = createCodexReauthAdapter().plan({ source: "codex" }, { loggedIn: true })
+    expect(plan).not.toHaveProperty("env")
   })
 })

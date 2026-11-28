@@ -14,6 +14,7 @@ import {
   type ParentAccountInfo,
   type ReauthAdapter,
   type ReauthLoginPlan,
+  type ReauthTarget,
   type ReauthVerification,
 } from "@agentproto/auth"
 
@@ -34,10 +35,12 @@ export interface LoginDocumentSource {
   displayName: string
   /** Parse the raw login document. Throws when it is not a usable login. */
   parse(raw: unknown): LoginDocument
-  /** The raw document, or undefined when no login is stored. */
-  read(): Promise<unknown | undefined>
-  /** The vendor CLI invocation that logs in again, or manual instructions. */
-  login: ReauthLoginPlan
+  /** The raw document, or undefined when no login is stored. `target` is the
+   *  profile being inspected, for a source whose login location is per-profile. */
+  read(target?: ReauthTarget): Promise<unknown | undefined>
+  /** The vendor CLI invocation that logs in again, or manual instructions;
+   *  a function when it depends on the profile. */
+  login: ReauthLoginPlan | ((target: ReauthTarget) => ReauthLoginPlan)
   /** The CLI renews the access token itself (see `ParentAccountInfo.selfRefreshing`). */
   selfRefreshing?: boolean
   /** Said when the document carries no account identity to compare. */
@@ -73,10 +76,10 @@ export function parseJsonDocument(raw: unknown): unknown {
 }
 
 export function createLoginDocumentAdapter(spec: LoginDocumentSource, now: () => number = Date.now): ReauthAdapter {
-  async function inspect(): Promise<ParentAccountInfo> {
+  async function inspect(target?: ReauthTarget): Promise<ParentAccountInfo> {
     let raw: unknown
     try {
-      raw = await spec.read()
+      raw = await spec.read(target)
     } catch (err) {
       return { loggedIn: false, note: `${spec.displayName} login unreadable: ${err instanceof Error ? err.message : String(err)}` }
     }
@@ -106,9 +109,9 @@ export function createLoginDocumentAdapter(spec: LoginDocumentSource, now: () =>
     ...(spec.aliases ? { aliases: spec.aliases } : {}),
     displayName: spec.displayName,
     inspect,
-    plan: () => spec.login,
-    async verify(_target, before): Promise<ReauthVerification> {
-      const after = await inspect()
+    plan: target => (typeof spec.login === "function" ? spec.login(target) : spec.login),
+    async verify(target, before): Promise<ReauthVerification> {
+      const after = await inspect(target)
       const checked: string[] = []
       const notChecked: string[] = []
       const problems: string[] = []

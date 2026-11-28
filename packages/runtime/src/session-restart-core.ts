@@ -104,7 +104,6 @@ import {
   type AuthEcho,
   type AdapterAuthDescriptor,
 } from "./spawn-defaults.js"
-import { readRecipeLoginJson } from "@agentproto/secrets/provision/recipe"
 import {
   bootSandboxAgentSession,
   stampDaemonCallerSessionId,
@@ -142,6 +141,7 @@ import {
   type RestartHandoff,
 } from "./restart-handoff.js"
 import { eligibleProfilesForRoute, spawnEligibilityManifest } from "./eligibility-manifest.js"
+import { readHostLoginJson, resolveCodexProfileLogin, type CodexProfileLogin } from "./codex-profile-login.js"
 import { resolveProfileSubaccount, type ResolvedProfileSubaccount } from "./subaccount-resolution.js"
 import { getProviderKey } from "./providers-store.js"
 import { getModelProvider } from "@agentproto/model-catalog/llm"
@@ -529,6 +529,11 @@ export async function resolveAccessProfileFromStore(
   return { profile, ...(stored?.value !== undefined ? { credential: stored.value } : {}) }
 }
 
+async function resolveCodexLoginFromStore(profileRef: string): Promise<CodexProfileLogin> {
+  const profile = await getAuthProfile(profileRef)
+  return profile ? resolveCodexProfileLogin(profile) : { handled: false }
+}
+
 /** The auth `method` facet ↔ the billing `mode` the resolver speaks:
  *  `oauth-bearer` (an OAuth/subscription bearer) → `"subscription"`, `api-key`
  *  → `"api-key"` (SPEC §1c/§3.1 — mirrors `@agentproto/auth`'s `tokenKind`
@@ -574,6 +579,10 @@ export interface ResolveResumeAuthOptions {
   /** Resolve `accessProfileRef` → profile metadata + secret. Defaults to
    *  {@link resolveAccessProfileFromStore}; tests inject a stub. */
   resolveAccessProfile?: AccessProfileResolver
+  /** A codex profile's own login home (and workspace pin) for `accessProfileRef`
+   *  — re-verified on resume so the session keeps its account. Defaults to the
+   *  profile store + {@link resolveCodexProfileLogin}; tests inject a stub. */
+  resolveCodexLogin?: (profileRef: string) => Promise<CodexProfileLogin>
   /** Same seam as `SpawnAgentSessionDeps.listCatalogModels` in
    *  session-spawn.ts — feeds the adapter-capability guard
    *  (`checkModelAdapterEligibility`). Omitted ⇒ the guard is skipped. */
@@ -701,6 +710,17 @@ export async function resolveResumeAuth(
   const spawnDefaults = resolveSpawnDefaults(configDefaults, adapterSlug, {
     auth: explicitAuthInput,
   })
+  // A codex profile with its own login home: re-verify and carry it, so the
+  // resumed session keeps the account it was started on (fail-loud if gone).
+  let codexLogin: CodexProfileLogin | undefined
+  if (adapterSlug === "codex" && opts.accessProfileRef !== undefined) {
+    try {
+      codexLogin = await (opts.resolveCodexLogin ?? resolveCodexLoginFromStore)(opts.accessProfileRef)
+    } catch (err) {
+      if (err instanceof SubscriptionSourceError) throw new RestartOverrideError(`${prefix} access profile: ${err.message}`)
+      throw err
+    }
+  }
   const authModel = effModel ?? resolved.defaultModel
   const pinnedProvider = spawnDefaults.auth.provider
   const resolvedProvider =
@@ -740,6 +760,8 @@ export async function resolveResumeAuth(
     ...(apiKeyStoreCredential !== undefined ? { apiKeyStoreCredential } : {}),
     ...forwardedSubaccountAuthInputs(spawnDefaults.auth),
     ...(spawnDefaults.auth.loginFile === true ? { loginFile: true } : {}),
+    ...(codexLogin?.handled ? { externalSubscriptionVerified: true } : {}),
+    ...(codexLogin?.handled && codexLogin.loginHome !== undefined ? { loginHome: codexLogin.loginHome } : {}),
   })
   let authSpec = result?.spec
   const authEcho = result?.echo
@@ -2085,13 +2107,19 @@ async function restartAgentSessionOnce(
     ) {
       const decl = boxLogin
       const writeFile = host.writeFile
-      const uploaded = await uploadBoxLoginCopy({ decl, homeDir: handle.defaultCwd, writeFile })
+      const hostLoginHome = authSpec.loginHome
+      const uploaded = await uploadBoxLoginCopy({
+        decl,
+        homeDir: handle.defaultCwd,
+        writeFile,
+        ...(hostLoginHome !== undefined ? { hostLoginHome } : {}),
+      })
       if (uploaded.ok) {
         boxLoginUpload = { boxPath: uploaded.boxPath, digest: uploaded.digest }
         refreshBoxLogin = createBoxLoginRefresher({
           decl,
           path: uploaded.boxPath,
-          read: () => readRecipeLoginJson(decl.recipe, decl.methodId),
+          read: () => readHostLoginJson(decl, hostLoginHome),
           write: writeFile,
           digest: uploaded.digest,
         })

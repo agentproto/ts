@@ -29,15 +29,19 @@ import {
   createAuthProfile,
   credentialIdentity,
   deleteAuthProfile,
+  describeCodexLogin,
   getAuthProfile,
   listAuthProfiles,
+  readCodexLogin,
   refreshAuthProfileModels,
+  resolveCodexHome,
   removeAuthProfile,
   setAuthProfileEnabled,
   setAuthProfileModels,
   updateAuthProfile,
   AuthProfileValidationError,
   type AuthProfile,
+  type CodexLoginDescription,
   type CredentialStore,
   type ProfileProvisionDeps,
 } from "@agentproto/auth"
@@ -78,6 +82,9 @@ export interface AuthProfileListRow extends AuthProfile {
    *  only when `keyStatus === "stored"` and the secret is long enough to
    *  reveal a tail safely. */
   last4?: string
+  /** Only for a profile with its own `codexHome`: whether a login is there, the
+   *  workspace it is bound to and the workspace TITLES it lists. No token. */
+  codexLogin?: { loggedIn: false } | ({ loggedIn: true } & CodexLoginDescription)
 }
 
 /**
@@ -96,6 +103,8 @@ export const compactAuthProfileRow = (p: AuthProfileListRow) => ({
   ...(p.credentialRef !== undefined ? { credentialRef: p.credentialRef } : {}),
   ...(p.source !== undefined ? { source: p.source } : {}),
   ...(p.subaccount !== undefined ? { subaccount: p.subaccount } : {}),
+  ...(p.codexHome !== undefined ? { codexHome: p.codexHome } : {}),
+  ...(p.codexLogin !== undefined ? { codexLogin: p.codexLogin } : {}),
   ...(p.label !== undefined ? { label: p.label } : {}),
   ...(p.disabled !== undefined ? { disabled: p.disabled } : {}),
   ...(p.models !== undefined ? { models: p.models } : {}),
@@ -115,6 +124,25 @@ export const compactAuthProfileRow = (p: AuthProfileListRow) => ({
  * so it reports `self-refreshing` without touching the store.
  */
 async function describeProfileKey(
+  profile: AuthProfile,
+  store: CredentialStore,
+): Promise<AuthProfileListRow> {
+  const row = await describeStoredKey(profile, store)
+  if (profile.source !== "codex" || profile.codexHome === undefined) return row
+  return { ...row, codexLogin: await describeCodexHomeLogin(profile.codexHome) }
+}
+
+/** The non-secret view of the login in a profile's Codex home. Never throws. */
+async function describeCodexHomeLogin(codexHome: string): Promise<NonNullable<AuthProfileListRow["codexLogin"]>> {
+  try {
+    const info = await readCodexLogin(resolveCodexHome(codexHome))
+    return info ? { loggedIn: true, ...describeCodexLogin(info) } : { loggedIn: false }
+  } catch {
+    return { loggedIn: false }
+  }
+}
+
+async function describeStoredKey(
   profile: AuthProfile,
   store: CredentialStore,
 ): Promise<AuthProfileListRow> {
@@ -254,6 +282,15 @@ export function registerAuthProfileTools(server: McpServer): void {
             "sub-account. Needs a credential or source as the parent account; the kind " +
             "must be one the account's registered provider supports.",
         ),
+      codexHome: z
+        .string()
+        .optional()
+        .describe(
+          "Codex login home for a `source: \"codex\"` profile (absolute path, or `~/…`): the " +
+            "directory holding THIS profile's auth.json. It becomes the spawn's CODEX_HOME. " +
+            "One ChatGPT login is bound to one workspace, so use one home per workspace and " +
+            "pin it with `subaccount: { kind: \"workspace\", id: <the login's account id> }`.",
+        ),
       label: z.string().optional().describe("Optional human-readable name."),
       credentialRef: z
         .string()
@@ -270,7 +307,7 @@ export function registerAuthProfileTools(server: McpServer): void {
             "(e.g. [\"opencode-go\"] for a key billed on both the opencode-go and opencode routes).",
         ),
     },
-    async ({ id, endpoint, method, credential, source, subaccount, label, credentialRef, routes }) => {
+    async ({ id, endpoint, method, credential, source, subaccount, codexHome, label, credentialRef, routes }) => {
       try {
         const created = await createAuthProfile(
           {
@@ -280,6 +317,7 @@ export function registerAuthProfileTools(server: McpServer): void {
             ...(credential !== undefined ? { credential } : {}),
             ...(source !== undefined ? { source } : {}),
             ...(subaccount ? { subaccount } : {}),
+            ...(codexHome !== undefined ? { codexHome } : {}),
             ...(label ? { label } : {}),
             ...(credentialRef ? { credentialRef } : {}),
             ...(routes && routes.length ? { routes } : {}),
@@ -401,12 +439,13 @@ export function registerAuthProfileTools(server: McpServer): void {
   // else a profile field is nullable (see CreateAuthProfileInput's source).
   server.tool(
     "auth_profile_update",
-    "Update a named auth profile's `label` and/or `costBudget` (never the " +
+    "Update a named auth profile's `label`, `costBudget` and/or (Codex " +
+      "profiles only) `codexHome` (never the " +
       "credential, credentialRef, source, disabled, or models fields; use " +
       "auth_profile_set_enabled / auth_profile_set_models for those). Each " +
       "field is tri-state: OMIT it to leave the current value untouched, " +
       "pass `null` to clear it, or pass a value to set it. At least one of " +
-      "`label` / `costBudget` must be given. `label` is trimmed and must be " +
+      "`label` / `costBudget` / `codexHome` must be given. `label` is trimmed and must be " +
       "non-blank (up to 200 characters) once set. Returns the updated row " +
       "with the same KEY IDENTITY auth_profile_list computes (`keyStatus`, " +
       "`fingerprint`, `last4`); never the secret. The row is FULL by " +
@@ -435,6 +474,14 @@ export function registerAuthProfileTools(server: McpServer): void {
         .describe(
           "New windowed spend cap, or null to clear it. Omit to leave the current costBudget unchanged.",
         ),
+      codexHome: z
+        .string()
+        .nullable()
+        .optional()
+        .describe(
+          "New Codex login home (absolute or `~/…`; `source: \"codex\"` profiles only), or null to " +
+            "clear it. Omit to leave it unchanged.",
+        ),
       full: z
         .boolean()
         .optional()
@@ -445,6 +492,7 @@ export function registerAuthProfileTools(server: McpServer): void {
         const patch = {
           ...("label" in input ? { label: input.label } : {}),
           ...("costBudget" in input ? { costBudget: input.costBudget } : {}),
+          ...("codexHome" in input ? { codexHome: input.codexHome } : {}),
         }
         const profile = await updateAuthProfile(input.id, patch, defaultProfileProvisionDeps())
         const store = new KeychainStore()
