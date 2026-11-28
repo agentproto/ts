@@ -15,9 +15,7 @@ import {
   Actor,
   CollectItem,
   type ConnectorReport,
-  type Coverage,
   type FailureCause,
-  type MetricName,
   Observation,
   Pickup,
   Recipe,
@@ -26,6 +24,7 @@ import {
 import {
   type CollectStore,
   type EventRecord,
+  type PlanEntry,
   type StoreLock,
   type TaskRecord,
   itemSeenKeys,
@@ -89,15 +88,37 @@ export interface RunOptions {
   runId?: string
 }
 
+/** The run stopped on an error of its own (the store failed, a connector could not plan). The run is left resumable. */
+export class CollectRunError extends Error {
+  readonly code = "RUN_ERROR"
+  constructor(
+    readonly runId: string,
+    override readonly cause: unknown,
+  ) {
+    super(`run ${runId} failed: ${cause instanceof Error ? cause.message : String(cause)}`)
+    this.name = "CollectRunError"
+  }
+}
+
+/**
+ * One collector drives one store: the store lock allows a single run at a
+ * time, so the host gate and the browser lane below are per collector and
+ * per run by construction. Do not share a browser between two collectors.
+ */
 export interface Collector {
   /** Plan the recipe and run it. Creates a new run. */
   run(recipe: Recipe | unknown, options?: RunOptions): Promise<RunReport>
   /**
-   * Continue a run from its log. Reloads the frozen recipe and every task as
-   * last recorded; `done` tasks are skipped and never fetched again, `pending`,
-   * `failed` and `skipped` tasks are redone (a skipped task is re-checked
-   * against the transports and secrets available now). The report covers the
-   * whole run, earlier attempts included.
+   * Continue a run from its log. Reloads the frozen recipe, the plan and every
+   * task as last recorded; `done` tasks are skipped and never fetched again,
+   * `pending`, `failed` and `skipped` tasks are redone (a skipped task is
+   * re-checked against the transports and secrets available now; a connector
+   * that is no longer registered has its tasks reported skipped). Tasks come
+   * back in their recorded global order. The per-connector and total caps are
+   * restored from the task states: a task that was `done` or `failed` already
+   * used its budget, so retrying it takes none, while a task that never
+   * started does. The report covers the whole run, earlier attempts included.
+   * A challenge stop does not carry over: the connector is tried again.
    */
   resume(runId: string, options?: Omit<RunOptions, "runId">): Promise<RunReport>
 }
@@ -107,11 +128,20 @@ const DEFAULT_WORKERS = 8
 
 const key = (connector: string, taskId: string) => `${connector}/${taskId}`
 
+type Task = ReturnType<typeof CollectTask.parse>
+
 interface Entry {
   key: string
   connector: Connector
-  task: ReturnType<typeof CollectTask.parse>
+  task: Task
+  /** Global start order: connector index, plan index, then follow-up depth and index. */
   order: number[]
+  /** Index in the connector's usable transports of the next attempt. */
+  attempt: number
+  started: boolean
+  t0: number
+  escalations: Array<{ from: string; to: string }>
+  lastTransport?: TransportName
 }
 
 interface ConnectorState {
@@ -121,10 +151,14 @@ interface ConnectorState {
   skipReason?: string
   started: number
   cap?: number
+  /** A challenge stopped the connector for the rest of the run. */
+  stopped: boolean
 }
 
 interface Failure {
   fallback: boolean
+  /** A verification page: stop the connector, never bypass. */
+  challenge: boolean
   cause: FailureCause
   message: string
 }
@@ -133,29 +167,32 @@ function classifyError(e: unknown): Failure {
   if (e instanceof TransportError) {
     const message = e.message
     switch (e.cause) {
-      case "blocked":
       case "challenge":
-        return { fallback: true, cause: "blocked", message }
+        return { fallback: false, challenge: true, cause: "blocked", message }
+      case "blocked":
+        return { fallback: true, challenge: false, cause: "blocked", message }
       case "empty":
-        return { fallback: true, cause: "empty", message }
+        return { fallback: true, challenge: false, cause: "empty", message }
       case "network":
-        return { fallback: false, cause: "network", message }
+        return { fallback: false, challenge: false, cause: "network", message }
       case "http":
         return e.status !== undefined && FALLBACK_STATUSES.has(e.status)
-          ? { fallback: true, cause: "blocked", message }
-          : { fallback: false, cause: "other", message }
+          ? { fallback: true, challenge: false, cause: "blocked", message }
+          : { fallback: false, challenge: false, cause: "http", message }
     }
   }
-  return { fallback: false, cause: "other", message: e instanceof Error ? e.message : String(e) }
+  return { fallback: false, challenge: false, cause: "other", message: e instanceof Error ? e.message : String(e) }
 }
 
+/** Status first: 401/403/429 fall back, other non-2xx statuses are `http` and final, a bodyless 2xx is `empty`. */
 function classifyRaw(raw: FetchedRaw): Failure | undefined {
-  if (raw.challenge) return { fallback: true, cause: "blocked", message: "challenge page" }
+  if (raw.challenge) return { fallback: false, challenge: true, cause: "blocked", message: "challenge page" }
   const s = raw.httpStatus
-  if (s !== undefined && FALLBACK_STATUSES.has(s)) return { fallback: true, cause: "blocked", message: `HTTP ${s}` }
-  if (raw.bytes.byteLength === 0) return { fallback: true, cause: "empty", message: "empty content" }
-  if (s !== undefined && s >= 500) return { fallback: false, cause: "network", message: `HTTP ${s}` }
-  if (s !== undefined && s >= 400) return { fallback: false, cause: "other", message: `HTTP ${s}` }
+  if (s !== undefined) {
+    if (FALLBACK_STATUSES.has(s)) return { fallback: true, challenge: false, cause: "blocked", message: `HTTP ${s}` }
+    if (s < 200 || s >= 300) return { fallback: false, challenge: false, cause: "http", message: `HTTP ${s}` }
+  }
+  if (raw.bytes.byteLength === 0) return { fallback: true, challenge: false, cause: "empty", message: "empty content" }
   return undefined
 }
 
@@ -203,12 +240,24 @@ function randomId(random: () => number): string {
   return s
 }
 
+function abortError(): Error {
+  return Object.assign(new Error("aborted"), { name: "AbortError" })
+}
+
 interface TaskCounters {
   items: number
   newItems: number
   duplicates: number
   observations: number
   metricValues: number
+}
+
+interface Prepared {
+  ref: string
+  items: CollectItem[]
+  observations: Observation[]
+  actors: Actor[]
+  pickups: Pickup[]
 }
 
 export function createCollector(options: CollectorOptions): Collector {
@@ -221,27 +270,34 @@ export function createCollector(options: CollectorOptions): Collector {
     : (options.connectors ?? { register() {}, get: (id) => listConnectors().find((c) => c.id === id), list: listConnectors })
   const iso = () => new Date(clock.now()).toISOString()
 
-  /** Wait for the host's turn: one request per interval per host, shared by every connector. */
-  const nextSlot = new Map<string, number>()
-  async function waitHost(url: string, intervalMs: number, signal?: AbortSignal) {
-    if (intervalMs <= 0) return
+  /**
+   * Per-host gate shared by every connector and every request, zero delay
+   * included. Starts on a host go through a FIFO, one at a time; each waits
+   * until the previous start plus the larger of its own interval and the
+   * previous start's, and measures that again when it wakes up.
+   */
+  const gates = new Map<string, { tail: Promise<void>; lastStart?: number; lastInterval: number }>()
+  async function gate(url: string, intervalMs: number, signal?: AbortSignal): Promise<void> {
     const host = hostOf(url)
-    const now = clock.now()
-    const slot = Math.max(now, nextSlot.get(host) ?? 0)
-    nextSlot.set(host, slot + intervalMs)
-    if (slot > now) await clock.sleep(slot - now, signal)
-    if (signal?.aborted) throw Object.assign(new Error("aborted"), { name: "AbortError" })
-  }
-
-  /** One browser task at a time per browser transport. */
-  let browserTail: Promise<unknown> = Promise.resolve()
-  function withBrowserSlot<T>(fn: () => Promise<T>): Promise<T> {
-    const p = browserTail.then(fn)
-    browserTail = p.then(
+    let g = gates.get(host)
+    if (!g) gates.set(host, (g = { tail: Promise.resolve(), lastInterval: 0 }))
+    const state = g
+    const mine = state.tail.then(async () => {
+      for (;;) {
+        if (signal?.aborted) throw abortError()
+        const gap = Math.max(intervalMs, state.lastInterval)
+        const wait = state.lastStart === undefined ? 0 : state.lastStart + gap - clock.now()
+        if (wait <= 0) break
+        await clock.sleep(wait, signal)
+      }
+      state.lastStart = clock.now()
+      state.lastInterval = intervalMs
+    })
+    state.tail = mine.then(
       () => undefined,
       () => undefined,
     )
-    return p
+    await mine
   }
 
   function handleFor(name: TransportName, connector: Connector, signal?: AbortSignal): FetchTransport {
@@ -252,11 +308,14 @@ export function createCollector(options: CollectorOptions): Collector {
         name,
         browser: {
           open: async (url) => {
-            await waitHost(url, delay, signal)
+            await gate(url, delay, signal)
             return b.open(url)
           },
           evaluate: (p, s) => b.evaluate(p, s),
-          fetchInPage: (p, r) => b.fetchInPage(p, r),
+          fetchInPage: async (p, r) => {
+            await gate(r.url, delay, r.signal ?? signal)
+            return b.fetchInPage(p, r)
+          },
           scroll: (p, o) => b.scroll(p, o),
           waitFor: (p, o) => b.waitFor(p, o),
           close: (p) => b.close(p),
@@ -268,7 +327,7 @@ export function createCollector(options: CollectorOptions): Collector {
       name,
       http: {
         request: async (req) => {
-          await waitHost(req.url, delay, req.signal ?? signal)
+          await gate(req.url, delay, req.signal ?? signal)
           return h.request({ signal, ...req })
         },
       },
@@ -277,7 +336,7 @@ export function createCollector(options: CollectorOptions): Collector {
 
   async function connectorState(id: string, recipe: Recipe): Promise<ConnectorState> {
     const connector = registry.get(id)
-    const state: ConnectorState = { id, connector, transports: [], started: 0 }
+    const state: ConnectorState = { id, connector, transports: [], started: 0, stopped: false }
     if (!connector) {
       state.skipReason = `connector "${id}" is not registered`
       return state
@@ -308,188 +367,314 @@ export function createCollector(options: CollectorOptions): Collector {
   ): Promise<RunReport> {
     const { signal, onEvent } = opts
     const lock: StoreLock = await store.acquireLock()
+    const active = new Set<Promise<void>>()
     try {
-      const startedAt = (mode === "resume" ? (await store.readReport(runId))?.startedAt : undefined) ?? iso()
-      const write = serial()
-      const emit = (type: string, data?: Record<string, unknown>) =>
-        write(async () => {
-          const event: EventRecord = { at: iso(), type, ...(data ? { data } : {}) }
-          await store.appendEvent(runId, event)
-          try {
-            onEvent?.({ ...event, runId })
-          } catch {
-            // A failing listener never breaks the run.
-          }
-        })
-      const record = (r: Omit<TaskRecord, "updatedAt">) =>
-        write(() => store.appendTask(runId, { ...r, updatedAt: iso() }))
+      return await executeLocked(runId, recipe, mode, signal, onEvent, active)
+    } catch (e) {
+      throw e instanceof CollectRunError ? e : new CollectRunError(runId, e)
+    } finally {
+      // Settle whatever is still running, then release the lock last.
+      await Promise.allSettled([...active])
+      await lock.release()
+    }
+  }
 
-      if (mode === "new") await store.createRun(runId, recipe)
-      await emit("run.start", { mode, recipeName: recipe.name })
-
-      const connectorIds = [...new Set(recipe.sources.map((s) => s.connector))]
-      const states = new Map<string, ConnectorState>()
-      for (const id of connectorIds) states.set(id, await connectorState(id, recipe))
-
-      const known = new Set<string>()
-      const entries: Entry[] = []
-      const payloadOf = (t: Entry["task"]) => ({ id: t.id, ...(t.kind ? { kind: t.kind } : {}), params: t.params })
-
-      if (mode === "new") {
-        for (const id of connectorIds) {
-          const state = states.get(id)!
-          const sources: RecipeSource[] = recipe.sources.filter((s) => s.connector === id)
-          if (!state.connector) {
-            await emit("connector.skipped", { connector: id, reason: state.skipReason })
-            continue
-          }
-          const planned = state.connector.plan(recipe, sources).map((t) => CollectTask.parse(t))
-          let index = 0
-          for (const task of planned) {
-            const k = key(id, task.id)
-            if (known.has(k)) continue
-            known.add(k)
-            const base = { taskId: k, connector: id, payload: payloadOf(task) }
-            if (state.skipReason) {
-              await record({ ...base, status: "skipped", reason: state.skipReason })
-            } else {
-              await record({ ...base, status: "pending" })
-              entries.push({ key: k, connector: state.connector, task, order: [index] })
-            }
-            index++
-          }
-          if (state.skipReason) await emit("connector.skipped", { connector: id, reason: state.skipReason })
+  async function executeLocked(
+    runId: string,
+    recipe: Recipe,
+    mode: "new" | "resume",
+    signal: AbortSignal | undefined,
+    onEvent: RunOptions["onEvent"],
+    active: Set<Promise<void>>,
+  ): Promise<RunReport> {
+    const startedAt = (mode === "resume" ? (await store.readReport(runId))?.startedAt : undefined) ?? iso()
+    const write = serial()
+    const emit = (type: string, data?: Record<string, unknown>) =>
+      write(async () => {
+        const event: EventRecord = { at: iso(), type, ...(data ? { data } : {}) }
+        await store.appendEvent(runId, event)
+        try {
+          onEvent?.({ ...event, runId })
+        } catch {
+          // A failing listener never breaks the run.
         }
-      } else {
-        const { records } = await readAll(store.tasks(runId))
-        records.forEach((r, index) => {
-          known.add(r.taskId)
-          const state = states.get(r.connector)
-          if (r.status === "done") {
-            if (state) state.started++
-            return
-          }
-          const task = CollectTask.safeParse(r.payload)
-          if (!state?.connector || state.skipReason || !task.success) return
-          entries.push({ key: r.taskId, connector: state.connector, task: task.data, order: [index] })
-        })
-        for (const state of states.values()) {
-          if (state.skipReason) await emit("connector.skipped", { connector: state.id, reason: state.skipReason })
-        }
-      }
-
-      // Scheduling.
-      const workers = recipe.workers ?? DEFAULT_WORKERS
-      const poolQueue: Entry[] = []
-      const browserQueue: Entry[] = []
-      const enqueue = (e: Entry) => {
-        const first = states.get(e.connector.id)?.transports[0]
-        insertSorted(first === "browser" ? browserQueue : poolQueue, e)
-      }
-      for (const e of entries) enqueue(e)
-      let poolActive = 0
-      let browserActive = 0
-      let totalStarted = 0
-      const aborted = () => signal?.aborted === true
-      let finish: () => void = () => {}
-      const finished = new Promise<void>((resolve) => {
-        finish = resolve
       })
-      const check = () => {
-        if (poolActive === 0 && browserActive === 0 && (aborted() || (!poolQueue.length && !browserQueue.length))) {
-          finish()
-        }
-      }
-      const pump = () => {
-        if (!aborted()) {
-          while (poolActive < workers && poolQueue.length) launch(poolQueue.shift()!, "pool")
-          if (browserActive === 0 && browserQueue.length) launch(browserQueue.shift()!, "browser")
-        }
-        check()
-      }
-      const launch = (entry: Entry, lane: "pool" | "browser") => {
-        if (lane === "pool") poolActive++
-        else browserActive++
-        runTask(entry)
-          .catch(async (e) => {
-            await emit("error", { connector: entry.connector.id, taskId: entry.task.id, message: String(e) })
-          })
-          .finally(() => {
-            if (lane === "pool") poolActive--
-            else browserActive--
-            pump()
-          })
-      }
-      signal?.addEventListener("abort", check, { once: true })
+    const record = (r: Omit<TaskRecord, "updatedAt">) =>
+      write(() => store.appendTask(runId, { ...r, updatedAt: iso() }))
 
-      // Level 2 lookup: canonical URL to the item holding it.
-      const urlIndex = new Map<string, string>()
-      for await (const item of store.items()) if (item.canonicalUrl) urlIndex.set(item.canonicalUrl, item.id)
-      const writtenActors = new Set<string>()
+    if (mode === "new") await store.createRun(runId, recipe)
+    await emit("run.start", { mode, recipeName: recipe.name })
+    if (recipe.sampling !== undefined) {
+      await emit("warning", { message: "recipe.sampling is not implemented yet and is ignored" })
+    }
 
-      async function ingest(
-        entry: Entry,
-        parsed: ParseResult,
-        rawRef: string,
-        fetchedAt: string,
-        transport: TransportName,
-        counters: TaskCounters,
-      ) {
-        const idMap = new Map<string, string>()
-        const prepared: CollectItem[] = []
-        for (const p of parsed.items ?? []) {
-          const canonical = p.canonicalUrl ?? (p.url ? canonicalUrl(p.url) : undefined)
-          const id = p.id ?? (canonical ? await itemIdFromUrl(p.source, canonical) : undefined)
-          if (!id) throw new Error("an item needs an id or a url")
-          const contentId = p.contentId ?? (p.text ? await textFingerprint(p.text) : undefined)
-          const item = CollectItem.parse({
-            ...p,
-            id,
-            canonicalUrl: canonical,
-            contentId,
-            firstSeenAt: p.firstSeenAt ?? fetchedAt,
-            runId,
-            rawRefs: [...new Set([...(p.rawRefs ?? []), rawRef])],
-          })
-          if (entry.connector.ext && item.ext !== undefined) entry.connector.ext.parse(item.ext)
-          prepared.push(item)
+    const connectorIds = [...new Set(recipe.sources.map((s) => s.connector))]
+    const states = new Map<string, ConnectorState>()
+    for (const id of connectorIds) states.set(id, await connectorState(id, recipe))
+    const payloadOf = (t: Task) => ({ id: t.id, ...(t.kind ? { kind: t.kind } : {}), params: t.params })
+
+    const known = new Set<string>()
+    const entries: Entry[] = []
+    /** Tasks that already used their budget in an earlier invocation (done or failed). */
+    const counted = new Set<string>()
+    const mkEntry = (state: ConnectorState, k: string, task: Task, order: number[]): Entry => ({
+      key: k,
+      connector: state.connector!,
+      task,
+      order,
+      attempt: 0,
+      started: false,
+      t0: 0,
+      escalations: [],
+    })
+
+    if (mode === "new") {
+      const plan: PlanEntry[] = []
+      const records: Array<Omit<TaskRecord, "updatedAt">> = []
+      connectorIds.forEach((id, ci) => {
+        const state = states.get(id)!
+        if (!state.connector) return
+        const sources: RecipeSource[] = recipe.sources.filter((s) => s.connector === id)
+        const planned = state.connector.plan(recipe, sources).map((t) => CollectTask.parse(t))
+        let index = 0
+        for (const task of planned) {
+          const k = key(id, task.id)
+          if (known.has(k)) continue
+          known.add(k)
+          const order = [ci, index++]
+          plan.push({ taskId: k, connector: id, order, payload: payloadOf(task) })
+          const base = { taskId: k, connector: id, order, payload: payloadOf(task) }
+          if (state.skipReason) records.push({ ...base, status: "skipped", reason: state.skipReason })
+          else {
+            records.push({ ...base, status: "pending" })
+            entries.push(mkEntry(state, k, task, order))
+          }
         }
-        const observations = (parsed.observations ?? []).map((o) =>
-          Observation.parse({ measuredAt: fetchedAt, transport, runId, rawRef, ...o }),
-        )
-        const actors = (parsed.actors ?? []).map((a) => Actor.parse(a))
-        const pickups = (parsed.pickups ?? []).map((p) =>
+      })
+      // The whole root plan lands in one atomic write, before anything runs.
+      await write(() => store.writePlan(runId, plan))
+      for (const r of records) await record(r)
+      for (const st of states.values()) {
+        if (st.skipReason) await emit("connector.skipped", { connector: st.id, reason: st.skipReason })
+      }
+    } else {
+      const plan = (await store.readPlan(runId)) ?? []
+      const { records } = await readAll(store.tasks(runId))
+      const byKey = new Map<string, { connector: string; order: number[]; payload: unknown; rec?: TaskRecord }>()
+      plan.forEach((p) => byKey.set(p.taskId, { connector: p.connector, order: p.order, payload: p.payload }))
+      records.forEach((r, i) => {
+        const prior = byKey.get(r.taskId)
+        const ci = Math.max(connectorIds.indexOf(r.connector), 0)
+        byKey.set(r.taskId, {
+          connector: r.connector,
+          order: r.order ?? prior?.order ?? [ci, Number.MAX_SAFE_INTEGER, i],
+          payload: r.payload ?? prior?.payload,
+          rec: r,
+        })
+      })
+      for (const [k, v] of byKey) {
+        known.add(k)
+        const status = v.rec?.status ?? "pending"
+        const state = states.get(v.connector)
+        if (status === "done" || status === "failed") {
+          counted.add(k)
+          if (state) state.started++
+        }
+        if (status === "done") continue
+        const task = CollectTask.safeParse(v.payload)
+        if (!task.success) continue
+        if (!state?.connector || state.skipReason) {
+          const reason = state?.skipReason ?? `connector "${v.connector}" is not registered`
+          if (v.rec?.status !== "skipped" || v.rec.reason !== reason) {
+            await record({ taskId: k, connector: v.connector, status: "skipped", reason, order: v.order, payload: payloadOf(task.data) })
+          }
+          continue
+        }
+        entries.push(mkEntry(state, k, task.data, v.order))
+      }
+      for (const st of states.values()) {
+        if (st.skipReason) await emit("connector.skipped", { connector: st.id, reason: st.skipReason })
+      }
+    }
+
+    // Recover seen keys whose write was lost, and give old keys an owner.
+    for await (const item of store.items()) {
+      for (const k of itemSeenKeys(item)) if ((await store.seenGet(k)) === undefined) await store.seenAdd(k, item.id)
+    }
+
+    // Scheduling: two lanes, each attempt is queued in the lane of its own transport.
+    const workers = recipe.workers ?? DEFAULT_WORKERS
+    const poolQueue: Entry[] = []
+    const browserQueue: Entry[] = []
+    const laneQueue = (e: Entry) =>
+      states.get(e.connector.id)?.transports[e.attempt] === "browser" ? browserQueue : poolQueue
+    const enqueue = (e: Entry) => insertSorted(laneQueue(e), e)
+    for (const e of entries) enqueue(e)
+    let poolActive = 0
+    let browserActive = 0
+    let totalStarted = counted.size
+    let fatal: unknown
+    const aborted = () => signal?.aborted === true
+    const stopping = () => aborted() || fatal !== undefined
+    let finish: () => void = () => {}
+    const finished = new Promise<void>((resolve) => {
+      finish = resolve
+    })
+    const check = () => {
+      if (poolActive === 0 && browserActive === 0 && (stopping() || (!poolQueue.length && !browserQueue.length))) finish()
+    }
+    const pump = () => {
+      if (!stopping()) {
+        while (poolActive < workers && poolQueue.length) launch(poolQueue.shift()!, "pool")
+        if (browserActive === 0 && browserQueue.length) launch(browserQueue.shift()!, "browser")
+      }
+      check()
+    }
+    const launch = (entry: Entry, lane: "pool" | "browser") => {
+      if (lane === "pool") poolActive++
+      else browserActive++
+      const p: Promise<void> = attempt(entry)
+        .catch((e) => {
+          if (stopping() && (e as { name?: string })?.name === "AbortError") return
+          fatal ??= e
+        })
+        .finally(() => {
+          active.delete(p)
+          if (lane === "pool") poolActive--
+          else browserActive--
+          pump()
+        })
+      active.add(p)
+    }
+    signal?.addEventListener("abort", check, { once: true })
+
+    const writtenActors = new Set<string>()
+
+    async function skip(entry: Entry, reason: string, why: string) {
+      await record({
+        taskId: entry.key,
+        connector: entry.connector.id,
+        status: "skipped",
+        reason,
+        order: entry.order,
+        payload: payloadOf(entry.task),
+        escalations: entry.escalations,
+      })
+      await emit("task.skipped", { connector: entry.connector.id, taskId: entry.task.id, reason: why })
+    }
+
+    /** A challenge stops the connector: its queued tasks are skipped with reason `challenge`. */
+    async function stopConnector(state: ConnectorState) {
+      state.stopped = true
+      await emit("connector.stopped", { connector: state.id, reason: "challenge" })
+      for (const q of [poolQueue, browserQueue]) {
+        for (let i = q.length - 1; i >= 0; i--) {
+          if (q[i]!.connector.id === state.id) {
+            const [e] = q.splice(i, 1)
+            await skip(e!, "challenge", "challenge")
+          }
+        }
+      }
+    }
+
+    async function prepare(
+      entry: Entry,
+      parsed: ParseResult,
+      ref: string,
+      fetchedAt: string,
+      transport: TransportName,
+    ): Promise<Prepared> {
+      const items: CollectItem[] = []
+      for (const p of parsed.items ?? []) {
+        const canonical = p.canonicalUrl ?? (p.url ? canonicalUrl(p.url) : undefined)
+        const id = p.id ?? (canonical ? await itemIdFromUrl(p.source, canonical) : undefined)
+        if (!id) throw new Error("an item needs an id or a url")
+        const contentId = p.contentId ?? (p.text ? await textFingerprint(p.text) : undefined)
+        const item = CollectItem.parse({
+          ...p,
+          id,
+          canonicalUrl: canonical,
+          contentId,
+          firstSeenAt: p.firstSeenAt ?? fetchedAt,
+          runId,
+          rawRefs: [...new Set([...(p.rawRefs ?? []), ref])],
+        })
+        if (entry.connector.ext && item.ext !== undefined) entry.connector.ext.parse(item.ext)
+        items.push(item)
+      }
+      return {
+        ref,
+        items,
+        observations: (parsed.observations ?? []).map((o) =>
+          Observation.parse({ measuredAt: fetchedAt, transport, rawRef: ref, ...o, runId, taskId: entry.key }),
+        ),
+        actors: (parsed.actors ?? []).map((a) => Actor.parse(a)),
+        pickups: (parsed.pickups ?? []).map((p) =>
           Pickup.parse({
             firstSeenAt: fetchedAt,
             measuredAt: fetchedAt,
-            runId,
             ...p,
-            evidence: { rawRef, ...p.evidence },
+            runId,
+            taskId: entry.key,
+            evidence: { rawRef: ref, ...p.evidence },
           }),
-        )
+        ),
+      }
+    }
 
-        // Validated: from here on, write.
-        counters.items += prepared.length
-        for (const item of prepared) {
-          if (await store.seenHas(seenKey("id", item.id))) {
-            counters.duplicates++
-            idMap.set(item.id, item.id)
-            continue
+    /** The owner of an item id: where an observation or a link to it must point. */
+    async function resolve(idMap: Map<string, string>, id: string): Promise<string> {
+      return idMap.get(id) ?? (await store.seenGet(seenKey("id", id))) ?? id
+    }
+
+    async function ingest(prepared: Prepared[], counters: TaskCounters) {
+      const idMap = new Map<string, string>()
+      const created: CollectItem[] = []
+      for (const { ref, items } of prepared) {
+        counters.items += items.length
+        for (const item of items) {
+          const idKey = seenKey("id", item.id)
+          let owner = await store.seenGet(idKey)
+          if (owner === undefined && (await store.seenHas(idKey))) owner = item.id
+          let level = owner ? 1 : 0
+          if (!owner && item.canonicalUrl) {
+            owner = await store.seenGet(seenKey("url", item.canonicalUrl))
+            if (owner) level = 2
           }
-          if (item.canonicalUrl && (await store.seenHas(seenKey("url", item.canonicalUrl)))) {
-            counters.duplicates++
-            const existing = urlIndex.get(item.canonicalUrl)
-            if (existing) idMap.set(item.id, existing)
+          if (owner) {
+            idMap.set(item.id, owner)
+            if (level === 2) await store.seenAdd(idKey, owner)
+            // After a resume, a hit on an item this run already wrote from the same raw is the same task redone.
+            const existing = mode === "resume" ? await store.getItem(owner) : undefined
+            if (existing?.runId === runId && existing.rawRefs?.includes(ref)) counters.newItems++
+            else counters.duplicates++
             continue
           }
           await store.upsertItem(item)
-          for (const k of itemSeenKeys(item)) await store.seenAdd(k)
-          if (item.canonicalUrl) urlIndex.set(item.canonicalUrl, item.id)
+          for (const k of itemSeenKeys(item)) await store.seenAdd(k, item.id)
+          created.push(item)
           counters.newItems++
         }
+      }
+      // Links follow the aliases decided above.
+      for (const item of created) {
+        if (!item.links) continue
+        const links = { ...item.links }
+        let changed = false
+        for (const name of ["target", "parent", "root", "quoted"] as const) {
+          const v = links[name]
+          if (v === undefined) continue
+          const r = await resolve(idMap, v)
+          if (r !== v) {
+            links[name] = r
+            changed = true
+          }
+        }
+        if (changed) await store.upsertItem({ ...item, links })
+      }
+      for (const { observations, actors, pickups } of prepared) {
         for (const o of observations) {
-          const itemId = idMap.get(o.itemId) ?? o.itemId
-          await store.appendObservation({ ...o, itemId })
+          await store.appendObservation({ ...o, itemId: await resolve(idMap, o.itemId) })
           counters.observations++
           counters.metricValues += Object.keys(o.metrics).length
         }
@@ -500,231 +685,219 @@ export function createCollector(options: CollectorOptions): Collector {
           await store.appendActor(a)
         }
         for (const p of pickups) {
-          await store.appendPickup({ ...p, itemId: idMap.get(p.itemId) ?? p.itemId })
+          await store.appendPickup({
+            ...p,
+            itemId: await resolve(idMap, p.itemId),
+            ...(p.pickupItemId ? { pickupItemId: await resolve(idMap, p.pickupItemId) } : {}),
+          })
         }
       }
-
-      async function runTask(entry: Entry): Promise<void> {
-        const connector = entry.connector
-        const state = states.get(connector.id)!
-        const base = { taskId: entry.key, connector: connector.id, payload: payloadOf(entry.task) }
-        if (state.cap !== undefined && state.started >= state.cap) {
-          await record({ ...base, status: "skipped", reason: `per-connector cap reached (${state.cap})` })
-          await emit("task.skipped", { connector: connector.id, taskId: entry.task.id, reason: "cap" })
-          return
-        }
-        if (recipe.caps?.total !== undefined && totalStarted >= recipe.caps.total) {
-          await record({ ...base, status: "skipped", reason: `total cap reached (${recipe.caps.total})` })
-          await emit("task.skipped", { connector: connector.id, taskId: entry.task.id, reason: "total cap" })
-          return
-        }
-        state.started++
-        totalStarted++
-        const t0 = clock.now()
-        await emit("task.start", { connector: connector.id, taskId: entry.task.id })
-
-        let last: Failure = { fallback: false, cause: "other", message: "no transport tried" }
-        for (let i = 0; i < state.transports.length; i++) {
-          if (aborted()) return // stays pending
-          const name = state.transports[i]!
-          const attempt = async (): Promise<FetchResult> =>
-            connector.fetch(entry.task, handleFor(name, connector, signal), { secrets, signal, now: iso() })
-          let result: FetchResult | undefined
-          let failure: Failure | undefined
-          let failedRaws: FetchedRaw[] = []
-          try {
-            result = await (name === "browser" ? withBrowserSlot(attempt) : attempt())
-            failedRaws = result.raws
-            const bad = result.raws.map(classifyRaw).find((f) => f !== undefined)
-            if (bad) failure = bad
-            else if (result.raws.length === 0) failure = { fallback: true, cause: "empty", message: "no content" }
-          } catch (e) {
-            if (aborted()) return // stays pending
-            failure = classifyError(e)
-            if (e instanceof TransportError && e.url) {
-              failedRaws = [{ url: e.url, ext: e.ext ?? "bin", bytes: e.body ?? new Uint8Array(), httpStatus: e.status }]
-            }
-          }
-
-          const fetchedAt = iso()
-          if (failure) {
-            last = failure
-            await write(async () => {
-              for (const raw of failedRaws) {
-                const cause = classifyRaw(raw)?.cause ?? failure.cause
-                await store.putRaw({
-                  connector: connector.id,
-                  ext: raw.ext,
-                  bytes: raw.bytes,
-                  url: raw.url,
-                  fetchedAt,
-                  httpStatus: raw.httpStatus,
-                  transport: name,
-                  runId,
-                  failure: cause,
-                })
-              }
-            })
-            const next = state.transports[i + 1]
-            if (failure.fallback && next) {
-              await emit("escalation", {
-                connector: connector.id,
-                taskId: entry.task.id,
-                from: name,
-                to: next,
-                cause: failure.cause,
-              })
-              continue
-            }
-            break
-          }
-
-          // Success: store, parse, dedup, write, then mark done.
-          const counters: TaskCounters = { items: 0, newItems: 0, duplicates: 0, observations: 0, metricValues: 0 }
-          const outcome = await write(async () => {
-            try {
-              const stored: Array<{ raw: FetchedRaw; ref: string }> = []
-              for (const raw of result!.raws) {
-                const put = await store.putRaw({
-                  connector: connector.id,
-                  ext: raw.ext,
-                  bytes: raw.bytes,
-                  url: raw.url,
-                  fetchedAt,
-                  httpStatus: raw.httpStatus,
-                  transport: name,
-                  runId,
-                })
-                stored.push({ raw, ref: put.ref })
-              }
-              const parsedAll: Array<{ parsed: ParseResult; ref: string }> = []
-              for (const { raw, ref } of stored) {
-                const parsed = await connector.parse({
-                  connector: connector.id,
-                  task: entry.task,
-                  raw: {
-                    ref,
-                    url: raw.url,
-                    ext: raw.ext,
-                    bytes: raw.bytes,
-                    httpStatus: raw.httpStatus,
-                    fetchedAt,
-                    transport: name,
-                  },
-                })
-                parsedAll.push({ parsed, ref })
-              }
-              const followUps: Entry["task"][] = []
-              for (const t of result!.tasks ?? []) followUps.push(CollectTask.parse(t))
-              for (const { parsed, ref } of parsedAll) {
-                await ingest(entry, parsed, ref, fetchedAt, name, counters)
-              }
-              const added: Entry[] = []
-              followUps.forEach((task, j) => {
-                const k = key(connector.id, task.id)
-                if (known.has(k)) return
-                known.add(k)
-                added.push({ key: k, connector, task, order: [...entry.order, j] })
-              })
-              for (const a of added) {
-                await store.appendTask(runId, {
-                  taskId: a.key,
-                  connector: connector.id,
-                  status: "pending",
-                  payload: payloadOf(a.task),
-                  updatedAt: iso(),
-                })
-              }
-              await store.appendTask(runId, {
-                ...base,
-                status: "done",
-                transport: name,
-                updatedAt: iso(),
-              })
-              return { added } as const
-            } catch (e) {
-              const message = e instanceof Error ? e.message : String(e)
-              await store.appendTask(runId, {
-                ...base,
-                status: "failed",
-                transport: name,
-                cause: "parse",
-                reason: message,
-                updatedAt: iso(),
-              })
-              return { error: message } as const
-            }
-          })
-          const durationMs = clock.now() - t0
-          if ("error" in outcome) {
-            await emit("task.end", {
-              connector: connector.id,
-              taskId: entry.task.id,
-              status: "failed",
-              transport: name,
-              cause: "parse",
-              message: outcome.error,
-              durationMs,
-              ...zeroCounters,
-            })
-            return
-          }
-          for (const a of outcome.added) enqueue(a)
-          await emit("task.end", {
-            connector: connector.id,
-            taskId: entry.task.id,
-            status: "done",
-            transport: name,
-            durationMs,
-            ...counters,
-          })
-          return
-        }
-
-        // Every transport failed.
-        await record({
-          ...base,
-          status: "failed",
-          transport: state.transports[state.transports.length - 1],
-          cause: last.cause,
-          reason: last.message,
-        })
-        await emit("task.end", {
-          connector: connector.id,
-          taskId: entry.task.id,
-          status: "failed",
-          cause: last.cause,
-          message: last.message,
-          durationMs: clock.now() - t0,
-          ...zeroCounters,
-        })
-      }
-
-      pump()
-      await finished
-      if (aborted()) await emit("cancelled", {})
-
-      const report = await buildReport(runId, startedAt, states)
-      await emit("run.end", { connectors: report.connectors.map((c) => ({ connector: c.connector, status: c.status })) })
-      await write(() => store.writeReport(runId, report))
-      return report
-    } finally {
-      await lock.release()
     }
+
+    async function finishFailed(entry: Entry, failure: Failure) {
+      const durationMs = clock.now() - entry.t0
+      await record({
+        taskId: entry.key,
+        connector: entry.connector.id,
+        status: "failed",
+        transport: entry.lastTransport,
+        cause: failure.cause,
+        reason: failure.challenge ? "challenge" : failure.message,
+        order: entry.order,
+        payload: payloadOf(entry.task),
+        escalations: entry.escalations,
+        counters: { items: 0, newItems: 0, duplicates: 0, observations: 0, metricValues: 0, durationMs },
+      })
+      await emit("task.end", {
+        connector: entry.connector.id,
+        taskId: entry.task.id,
+        status: "failed",
+        cause: failure.cause,
+        message: failure.message,
+        durationMs,
+      })
+    }
+
+    /** One attempt on one transport. A fallback queues the next attempt in the next transport's lane. */
+    async function attempt(entry: Entry): Promise<void> {
+      const connector = entry.connector
+      const state = states.get(connector.id)!
+      if (stopping()) return // stays pending
+      if (state.stopped) return skip(entry, "challenge", "challenge")
+      if (!entry.started) {
+        if (!counted.has(entry.key)) {
+          if (state.cap !== undefined && state.started >= state.cap) {
+            return skip(entry, `per-connector cap reached (${state.cap})`, "cap")
+          }
+          if (recipe.caps?.total !== undefined && totalStarted >= recipe.caps.total) {
+            return skip(entry, `total cap reached (${recipe.caps.total})`, "total cap")
+          }
+          state.started++
+          totalStarted++
+        }
+        entry.started = true
+        entry.t0 = clock.now()
+        await emit("task.start", { connector: connector.id, taskId: entry.task.id })
+      }
+
+      const name = state.transports[entry.attempt]!
+      entry.lastTransport = name
+      let result: FetchResult | undefined
+      let failure: Failure | undefined
+      let failedRaws: FetchedRaw[] = []
+      try {
+        result = await connector.fetch(entry.task, handleFor(name, connector, signal), { secrets, signal, now: iso() })
+        failedRaws = result.raws
+        failure = result.raws.map(classifyRaw).find((f) => f !== undefined)
+        if (!failure && result.raws.length === 0) {
+          failure = { fallback: true, challenge: false, cause: "empty", message: "no content" }
+        }
+      } catch (e) {
+        if (aborted()) return // stays pending
+        failure = classifyError(e)
+        if (e instanceof TransportError && e.url) {
+          failedRaws = [{ url: e.url, ext: e.ext ?? "bin", bytes: e.body ?? new Uint8Array(), httpStatus: e.status }]
+        }
+      }
+
+      const fetchedAt = iso()
+      if (failure) {
+        const f = failure
+        await write(async () => {
+          for (const raw of failedRaws) {
+            await store.putRaw({
+              connector: connector.id,
+              ext: raw.ext,
+              bytes: raw.bytes,
+              url: raw.url,
+              fetchedAt,
+              httpStatus: raw.httpStatus,
+              transport: name,
+              runId,
+              failure: classifyRaw(raw)?.cause ?? f.cause,
+            })
+          }
+        })
+        if (f.challenge) {
+          await finishFailed(entry, f)
+          await stopConnector(state)
+          return
+        }
+        const next = state.transports[entry.attempt + 1]
+        if (f.fallback && next) {
+          entry.escalations.push({ from: name, to: next })
+          await emit("escalation", { connector: connector.id, taskId: entry.task.id, from: name, to: next, cause: f.cause })
+          entry.attempt++
+          enqueue(entry)
+          return
+        }
+        return finishFailed(entry, f)
+      }
+
+      // Success: keep the raws, parse and validate every one, then write, then mark done.
+      const counters: TaskCounters = { items: 0, newItems: 0, duplicates: 0, observations: 0, metricValues: 0 }
+      let followUps: Entry[] = []
+      const parseError = await write(async (): Promise<string | undefined> => {
+        const stored: Array<{ raw: FetchedRaw; ref: string }> = []
+        for (const raw of result!.raws) {
+          const put = await store.putRaw({
+            connector: connector.id,
+            ext: raw.ext,
+            bytes: raw.bytes,
+            url: raw.url,
+            fetchedAt,
+            httpStatus: raw.httpStatus,
+            transport: name,
+            runId,
+          })
+          stored.push({ raw, ref: put.ref })
+        }
+        const prepared: Prepared[] = []
+        const tasks: Task[] = []
+        try {
+          for (const { raw, ref } of stored) {
+            const parsed = await connector.parse({
+              connector: connector.id,
+              task: entry.task,
+              raw: { ref, url: raw.url, ext: raw.ext, bytes: raw.bytes, httpStatus: raw.httpStatus, fetchedAt, transport: name },
+            })
+            prepared.push(await prepare(entry, parsed, ref, fetchedAt, name))
+          }
+          for (const t of result!.tasks ?? []) tasks.push(CollectTask.parse(t))
+        } catch (e) {
+          return e instanceof Error ? e.message : String(e)
+        }
+        // Everything is valid: from here on, write.
+        await ingest(prepared, counters)
+        tasks.forEach((task, j) => {
+          const k = key(connector.id, task.id)
+          if (known.has(k)) return
+          known.add(k)
+          followUps.push(mkEntry(state, k, task, [...entry.order, j]))
+        })
+        for (const f of followUps) {
+          await store.appendTask(runId, {
+            taskId: f.key,
+            connector: connector.id,
+            status: "pending",
+            order: f.order,
+            payload: payloadOf(f.task),
+            updatedAt: iso(),
+          })
+        }
+        await store.appendTask(runId, {
+          taskId: entry.key,
+          connector: connector.id,
+          status: "done",
+          transport: name,
+          order: entry.order,
+          payload: payloadOf(entry.task),
+          escalations: entry.escalations,
+          counters: { ...counters, durationMs: clock.now() - entry.t0 },
+          updatedAt: iso(),
+        })
+        return undefined
+      })
+      if (parseError !== undefined) {
+        return finishFailed(entry, { fallback: false, challenge: false, cause: "parse", message: parseError })
+      }
+      for (const f of followUps) enqueue(f)
+      await emit("task.end", {
+        connector: connector.id,
+        taskId: entry.task.id,
+        status: "done",
+        transport: name,
+        durationMs: clock.now() - entry.t0,
+        ...counters,
+      })
+    }
+
+    pump()
+    await finished
+    await Promise.allSettled([...active])
+    if (fatal !== undefined) {
+      // Best effort: leave a report of what is on disk, then surface the failure.
+      try {
+        await write(async () => store.writeReport(runId, await buildReport(runId, startedAt, states)))
+      } catch {
+        // The store is what failed; the run error below says so.
+      }
+      throw new CollectRunError(runId, fatal)
+    }
+    if (aborted()) await emit("cancelled", {})
+    const report = await buildReport(runId, startedAt, states)
+    await emit("run.end", { connectors: report.connectors.map((c) => ({ connector: c.connector, status: c.status })) })
+    await write(() => store.writeReport(runId, report))
+    return report
   }
 
-  const zeroCounters = { items: 0, newItems: 0, duplicates: 0, observations: 0, metricValues: 0 }
-
-  async function buildReport(
-    runId: string,
-    startedAt: string,
-    states: Map<string, ConnectorState>,
-  ): Promise<RunReport> {
+  /** The report is rebuilt from the task records, so it covers the whole run and survives a resume. */
+  async function buildReport(runId: string, startedAt: string, states: Map<string, ConnectorState>): Promise<RunReport> {
     const { records: tasks } = await readAll(store.tasks(runId))
-    const { records: events } = await readAll(store.events(runId))
-    const primary: Record<string, MetricName | undefined> = {}
-    for (const s of states.values()) primary[s.id] = s.connector?.counters.find((c) => c.primary)?.name
-    const coverage: Coverage = await computeCoverage(store, { primary })
+    const coverage = await computeCoverage(
+      store,
+      [...states.values()].flatMap((s) => (s.connector ? [s.connector] : [])),
+    )
 
     const connectors: ConnectorReport[] = []
     for (const s of states.values()) {
@@ -739,23 +912,24 @@ export function createCollector(options: CollectorOptions): Collector {
 
       const sum = { items: 0, newItems: 0, duplicates: 0, observations: 0, metricValues: 0, durationMs: 0 }
       const escalations = new Map<string, { from: string; to: string; count: number }>()
-      for (const e of events) {
-        const d = e.data
-        if (!d || d.connector !== s.id) continue
-        if (e.type === "task.end") {
-          for (const k of Object.keys(sum) as Array<keyof typeof sum>) sum[k] += Number(d[k] ?? 0)
-        } else if (e.type === "escalation") {
-          const ek = `${d.from}>${d.to}`
-          const cur = escalations.get(ek) ?? { from: String(d.from), to: String(d.to), count: 0 }
+      for (const t of mine) {
+        for (const k of Object.keys(sum) as Array<keyof typeof sum>) sum[k] += t.counters?.[k] ?? 0
+        for (const e of t.escalations ?? []) {
+          const ek = `${e.from}>${e.to}`
+          const cur = escalations.get(ek) ?? { from: e.from, to: e.to, count: 0 }
           cur.count++
           escalations.set(ek, cur)
         }
       }
 
+      const challenged = mine.some((t) => t.reason === "challenge")
       let status: ConnectorReport["status"] = "ok"
       let reason: string | undefined
       if (s.skipReason) status = "skipped"
-      else if (done === 0 && failedTasks.length > 0) {
+      else if (challenged) {
+        status = done > 0 ? "partial" : "failed"
+        reason = "challenge: the connector was stopped and its remaining tasks skipped"
+      } else if (done === 0 && failedTasks.length > 0) {
         status = "failed"
         reason = "every task failed"
       } else if (done > 0 && sum.items === 0) {

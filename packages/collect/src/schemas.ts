@@ -96,6 +96,8 @@ export const ObservationBase = z.object({
   missing: z.partialRecord(MetricName, MissingReason).optional(),
   transport: z.string().optional(),
   runId: z.string().optional(),
+  /** Task that wrote it. With `runId`, lets readers drop the copy a redone task writes twice. */
+  taskId: z.string().optional(),
   rawRef: z.string().optional(),
 })
 
@@ -180,6 +182,8 @@ export const PickupBase = z.object({
   firstSeenAt: timestamp,
   measuredAt: timestamp,
   runId: z.string().optional(),
+  /** Task that wrote it. With `runId`, lets readers drop the copy a redone task writes twice. */
+  taskId: z.string().optional(),
 })
 
 /** Unrefined shape of `Pickup`, for consumers that need `.extend()`, `.pick()` or `.partial()`. */
@@ -263,7 +267,7 @@ export const Recipe = z.object({
 })
 export type Recipe = z.infer<typeof Recipe>
 
-export const FailureCause = z.enum(["blocked", "empty", "network", "parse", "other"])
+export const FailureCause = z.enum(["blocked", "empty", "network", "http", "parse", "other"])
 export type FailureCause = z.infer<typeof FailureCause>
 
 /** Every `with*` field and `eligible` is a count of items; shares are computed by the reader. */

@@ -1,24 +1,27 @@
+import type { Connector, ConnectorRegistry } from "./connector"
 import type { CollectStore } from "./store"
 import type { CoverageCell, Coverage, MetricName } from "./schemas"
 
-export interface CoverageOptions {
-  /**
-   * Primary counter by source. A source with no entry counts any metric as its
-   * primary one.
-   */
-  primary?: Record<string, MetricName | undefined>
-}
+/** The connectors whose declared primary counters decide `withPrimaryMetric`. */
+export type CoverageConnectors = ConnectorRegistry | readonly Connector[]
 
 const UNKNOWN = "unknown"
 const NO_SUBJECT = "none"
 
 /**
  * Coverage of what a store holds: platform (item source) x format x language x
- * subject. An item with several subjects counts in each subject's cell, one
- * with none in the `none` cell. Missing format or language reads `unknown`.
+ * subject. `withPrimaryMetric` uses the primary counter each connector
+ * declares (matched on the item source); a source with no connector, or one
+ * that declares no primary counter, never counts. An item with several
+ * subjects counts in each subject's cell, one with none in the `none` cell. Missing format or language reads `unknown`.
  * Streams the store; memory is proportional to the number of items.
  */
-export async function computeCoverage(store: CollectStore, options: CoverageOptions = {}): Promise<Coverage> {
+export async function computeCoverage(store: CollectStore, connectors: CoverageConnectors = []): Promise<Coverage> {
+  const primary: Record<string, MetricName | undefined> = {}
+  const list: Connector[] = Array.isArray(connectors) ? [...connectors] : (connectors as ConnectorRegistry).list()
+  for (const c of list) {
+    primary[c.id] = c.counters.find((k) => k.primary)?.name
+  }
   const metricsByItem = new Map<string, Set<string>>()
   for await (const o of store.observations()) {
     let set = metricsByItem.get(o.itemId)
@@ -41,8 +44,8 @@ export async function computeCoverage(store: CollectStore, options: CoverageOpti
   const cells = new Map<string, CoverageCell>()
   for (const item of items) {
     const seen = metricsByItem.get(item.id)
-    const primary = options.primary?.[item.source]
-    const hasPrimary = seen !== undefined && (primary ? seen.has(primary) : seen.size > 0)
+    const main = primary[item.source]
+    const hasPrimary = seen !== undefined && main !== undefined && seen.has(main)
     const hasAudience = item.authorRef !== undefined && audience.has(item.authorRef)
     const hasAge = item.postedAt !== undefined && seen !== undefined
     const hasAuthorId = item.authorRef !== undefined

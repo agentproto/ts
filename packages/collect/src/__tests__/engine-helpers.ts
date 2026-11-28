@@ -100,15 +100,37 @@ export function fakeBrowser(delayMs = 0): FakeBrowser {
 export interface FakeClock extends Clock {
   t: number
   sleeps: number[]
+  /** Extra time every sleep overshoots by (a late wake-up). */
+  late: number
 }
-export function fakeClock(start = Date.parse("2026-11-28T10:00:00Z")): FakeClock {
+/** Virtual time: it moves only when everything else is idle, to the earliest pending timer. */
+export function fakeClock(start = Date.parse("2026-11-28T10:00:00Z"), late = 0): FakeClock {
+  const timers: Array<{ at: number; resolve: () => void }> = []
+  let scheduled = false
+  const schedule = () => {
+    if (scheduled) return
+    scheduled = true
+    setTimeout(() => {
+      scheduled = false
+      if (!timers.length) return
+      timers.sort((a, b) => a.at - b.at)
+      const next = timers.shift()!
+      c.t = Math.max(c.t, next.at) + c.late
+      next.resolve()
+      schedule()
+    }, 0)
+  }
   const c: FakeClock = {
     t: start,
     sleeps: [],
+    late,
     now: () => c.t,
-    async sleep(ms) {
+    sleep(ms) {
       c.sleeps.push(ms)
-      c.t += ms
+      return new Promise<void>((resolve) => {
+        timers.push({ at: c.t + ms, resolve })
+        schedule()
+      })
     },
   }
   return c

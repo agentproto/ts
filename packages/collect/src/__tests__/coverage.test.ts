@@ -1,6 +1,17 @@
 import { describe, expect, it } from "vitest"
-import { computeCoverage, memoryStore } from "../index"
+import { computeCoverage, defineConnector, memoryStore } from "../index"
 import { T, item } from "./helpers"
+
+const connector = (counters: Array<{ name: "points" | "likes"; primary?: boolean }>) =>
+  defineConnector({
+    id: "hn",
+    version: "1",
+    transports: ["http"],
+    counters: counters.map((c) => ({ ...c, unit: "count", scope: "root" as const })),
+    plan: () => [],
+    fetch: async () => ({ raws: [] }),
+    parse: () => ({}),
+  })
 
 describe("computeCoverage", () => {
   it("counts every column on a known set, eligible included", async () => {
@@ -17,7 +28,7 @@ describe("computeCoverage", () => {
     await s.appendActor({ ref: "hn:ann", audience: [{ measuredAt: T, kind: "followers", value: 10 }] })
     await s.appendActor({ ref: "hn:bob", audience: [{ measuredAt: T, kind: "karma", value: 99 }] })
 
-    const { cells } = await computeCoverage(s, { primary: { hn: "points" } })
+    const { cells } = await computeCoverage(s, [connector([{ name: "points", primary: true }])])
     expect(cells).toHaveLength(2)
     const main = cells.find((c) => c.subject === "ai")!
     expect(main).toEqual({
@@ -37,11 +48,12 @@ describe("computeCoverage", () => {
     expect(none).toMatchObject({ language: "unknown", items: 1, withPrimaryMetric: 0, withUniqueContent: 0, eligible: 0 })
   })
 
-  it("counts any metric as primary when the source declares none", async () => {
+  it("never counts a primary metric when none is declared, or when no connector is known", async () => {
     const s = memoryStore()
     await s.upsertItem(item(1))
     await s.appendObservation({ itemId: "hn:1", measuredAt: T, metrics: { likes: 1 } })
-    const { cells } = await computeCoverage(s)
-    expect(cells[0]!.withPrimaryMetric).toBe(1)
+    expect((await computeCoverage(s, [connector([{ name: "likes" }])])).cells[0]!.withPrimaryMetric).toBe(0)
+    expect((await computeCoverage(s)).cells[0]!.withPrimaryMetric).toBe(0)
+    expect((await computeCoverage(s, [connector([{ name: "likes", primary: true }])])).cells[0]!.withPrimaryMetric).toBe(1)
   })
 })

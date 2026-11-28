@@ -10,6 +10,8 @@ import { Actor, CollectItem, Observation, Pickup, Recipe, RunReport } from "../s
 import {
   type CollectStore,
   EventRecord,
+  type PlanEntry,
+  PlanEntry as PlanEntrySchema,
   type PutRawInput,
   RawIndexEntry,
   type Reader,
@@ -20,7 +22,10 @@ import {
   StoreVersionError,
   TaskRecord,
   assertSafeName,
+  dropRedone,
   itemSeenKeys,
+  observationRedoKey,
+  pickupRedoKey,
   lastWins,
   makeReader,
   parseRawRef,
@@ -219,13 +224,18 @@ export async function openStore(path: string, options: OpenStoreOptions = {}): P
   return store
 }
 
+function seenText(m: Map<string, string | undefined>): string {
+  return [...m].map(([k, v]) => `${v === undefined ? k : `${k}\t${v}`}\n`).join("")
+}
+
 class DiskStore implements CollectStore {
   /** Writes of this process, run one after the other. */
   private queue: Promise<unknown> = Promise.resolve()
   private lockToken: string | undefined
   /** Log files whose tail was checked for a torn line since this handle started. */
   private readonly tailChecked = new Set<string>()
-  private readonly seen = new Set<string>()
+  /** Dedup key to the id of the item that owns it (`undefined` for a line written without an owner). */
+  private readonly seen = new Map<string, string | undefined>()
 
   constructor(
     private readonly root: string,
@@ -321,20 +331,27 @@ class DiskStore implements CollectStore {
   async reloadSeen(): Promise<void> {
     await this.enqueue(async () => {
       const path = this.p("seen.idx")
-      const next = new Set<string>()
+      const next = new Map<string, string | undefined>()
+      const add = (line: string) => {
+        // `key<TAB>itemId`; an older line carries only the key. A later line can add an owner, never change one.
+        const tab = line.indexOf("\t")
+        const key = tab < 0 ? line : line.slice(0, tab)
+        const owner = tab < 0 ? undefined : line.slice(tab + 1) || undefined
+        if (!next.has(key) || (next.get(key) === undefined && owner !== undefined)) next.set(key, owner)
+      }
       const torn = await hasTornTail(path)
       if (await exists(path)) {
         const rl = createInterface({ input: createReadStream(path, { encoding: "utf8" }), crlfDelay: Infinity })
         let last: string | undefined
         for await (const line of rl) {
-          if (last !== undefined && last !== "") next.add(last)
+          if (last !== undefined && last !== "") add(last)
           last = line
         }
-        if (last !== undefined && last !== "" && !torn) next.add(last)
+        if (last !== undefined && last !== "" && !torn) add(last)
       }
-      if (torn && this.lockToken) await writeAtomic(path, [...next].map((k) => `${k}\n`).join(""))
+      if (torn && this.lockToken) await writeAtomic(path, seenText(next))
       this.seen.clear()
-      for (const k of next) this.seen.add(k)
+      for (const [k, v] of next) this.seen.set(k, v)
     })
   }
 
@@ -418,7 +435,7 @@ class DiskStore implements CollectStore {
     await this.append(this.p("observations", `${sourceOf(parsed.itemId)}.jsonl`), parsed)
   }
   observations(source?: string) {
-    return this.multi("observations", source, Observation)
+    return dropRedone(this.multi("observations", source, Observation), observationRedoKey)
   }
   async appendActor(a: Actor) {
     const parsed = Actor.parse(a)
@@ -431,34 +448,42 @@ class DiskStore implements CollectStore {
     await this.append(this.p("pickups.jsonl"), Pickup.parse(p))
   }
   pickups() {
-    return this.lines(this.p("pickups.jsonl"), Pickup)
+    return dropRedone(this.lines(this.p("pickups.jsonl"), Pickup), pickupRedoKey)
   }
 
   async seenHas(key: string) {
     return this.seen.has(key)
   }
   /** Persisted first, then added to the in-memory set. */
-  async seenAdd(key: string) {
-    if (key.includes("\n")) throw new Error("a seen key cannot contain a newline")
+  async seenGet(key: string) {
+    return this.seen.get(key)
+  }
+  async seenAdd(key: string, itemId?: string) {
+    if (key.includes("\n") || key.includes("\t")) throw new Error("a seen key cannot contain a newline or a tab")
+    if (itemId !== undefined && (itemId.includes("\n") || itemId.includes("\t"))) {
+      throw new Error("an item id cannot contain a newline or a tab")
+    }
     await this.enqueue(async () => {
-      if (this.seen.has(key)) return
-      await this.appendLine(this.p("seen.idx"), key)
-      this.seen.add(key)
+      if (this.seen.has(key) && (this.seen.get(key) !== undefined || itemId === undefined)) return
+      await this.appendLine(this.p("seen.idx"), itemId === undefined ? key : `${key}\t${itemId}`)
+      this.seen.set(key, itemId)
     })
   }
   async seenKeys() {
     await this.drain()
-    return [...this.seen]
+    return [...this.seen.keys()]
   }
   /** Runs entirely inside the write queue, reading the items without waiting on it. */
   async rebuildSeenIndex() {
     await this.enqueue(async () => {
-      const keys = new Set<string>()
-      for await (const item of this.readItems(undefined, () => {})) for (const k of itemSeenKeys(item)) keys.add(k)
-      await writeAtomic(this.p("seen.idx"), [...keys].map((k) => `${k}\n`).join(""))
+      const keys = new Map<string, string | undefined>()
+      for await (const item of this.readItems(undefined, () => {})) {
+        for (const k of itemSeenKeys(item)) if (!keys.has(k)) keys.set(k, item.id)
+      }
+      await writeAtomic(this.p("seen.idx"), seenText(keys))
       this.tailChecked.delete(this.p("seen.idx"))
       this.seen.clear()
-      for (const k of keys) this.seen.add(k)
+      for (const [k, v] of keys) this.seen.set(k, v)
     })
   }
 
@@ -506,6 +531,25 @@ class DiskStore implements CollectStore {
       await self.drain()
       yield* lastWins(self.readLines(join(self.runDir(runId), "tasks.jsonl"), TaskRecord, onSkip), (t) => t.taskId)
     })
+  }
+  async writePlan(runId: string, plan: PlanEntry[]) {
+    const text = plan.map((p) => `${JSON.stringify(PlanEntrySchema.parse(p))}\n`).join("")
+    const dir = this.runDir(runId)
+    await this.enqueue(async () => {
+      if (!(await exists(join(dir, "recipe.json")))) throw new Error(`unknown run ${runId}`)
+      await writeAtomic(join(dir, "plan.jsonl"), text)
+    })
+  }
+  async readPlan(runId: string) {
+    await this.drain()
+    const buf = await readFileOrUndefined(join(this.runDir(runId), "plan.jsonl"))
+    if (!buf) return undefined
+    const out: PlanEntry[] = []
+    for (const line of buf.toString("utf8").split("\n")) {
+      if (line.trim() === "") continue
+      out.push(PlanEntrySchema.parse(JSON.parse(line)))
+    }
+    return out
   }
   async appendSampling(runId: string, r: SamplingRecord) {
     await this.appendRunLine(runId, "sampling.jsonl", SamplingRecord.parse(r))

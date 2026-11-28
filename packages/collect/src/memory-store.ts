@@ -14,6 +14,11 @@ import {
   type TaskRecord,
   TaskRecord as TaskRecordSchema,
   assertSafeName,
+  dropRedone,
+  observationRedoKey,
+  pickupRedoKey,
+  type PlanEntry,
+  PlanEntry as PlanEntryRecord,
   parseRawRef,
   itemSeenKeys,
   lastWins,
@@ -30,6 +35,7 @@ interface RunState {
   sampling: SamplingRecord[]
   events: EventRecord[]
   report?: RunReport
+  plan?: PlanEntry[]
 }
 
 function listReader<T>(rows: () => T[]) {
@@ -47,7 +53,7 @@ export function memoryStore(options: { now?: () => string } = {}): CollectStore 
   const observations: Observation[] = []
   const actors: Actor[] = []
   const pickups: Pickup[] = []
-  const seen = new Set<string>()
+  const seen = new Map<string, string | undefined>()
   const runs = new Map<string, RunState>()
   let locked = false
 
@@ -114,7 +120,8 @@ export function memoryStore(options: { now?: () => string } = {}): CollectStore 
       sourceOf(parsed.itemId)
       observations.push(parsed)
     },
-    observations: (source) => listReader(() => bySource(observations, source, (o) => sourceOf(o.itemId))),
+    observations: (source) =>
+      dropRedone(listReader(() => bySource(observations, source, (o) => sourceOf(o.itemId))), observationRedoKey),
     async appendActor(a) {
       const parsed = Actor.parse(a)
       sourceOf(parsed.ref)
@@ -124,20 +131,23 @@ export function memoryStore(options: { now?: () => string } = {}): CollectStore 
     async appendPickup(p) {
       pickups.push(Pickup.parse(p))
     },
-    pickups: () => listReader(() => pickups),
+    pickups: () => dropRedone(listReader(() => pickups), pickupRedoKey),
 
     async seenHas(key) {
       return seen.has(key)
     },
-    async seenAdd(key) {
-      seen.add(key)
+    async seenGet(key) {
+      return seen.get(key)
+    },
+    async seenAdd(key, itemId) {
+      if (!seen.has(key) || (seen.get(key) === undefined && itemId !== undefined)) seen.set(key, itemId)
     },
     async seenKeys() {
-      return [...seen]
+      return [...seen.keys()]
     },
     async rebuildSeenIndex() {
       seen.clear()
-      for (const item of items.values()) for (const k of itemSeenKeys(item)) seen.add(k)
+      for (const item of items.values()) for (const k of itemSeenKeys(item)) if (!seen.has(k)) seen.set(k, item.id)
     },
 
     async createRun(runId, recipe) {
@@ -164,6 +174,13 @@ export function memoryStore(options: { now?: () => string } = {}): CollectStore 
       makeReader<TaskRecord>(async function* () {
         yield* lastWins(listReader(() => rows(runId, (s) => s.tasks)), (t) => t.taskId)
       }),
+    async writePlan(runId, plan) {
+      run(runId).plan = plan.map((p) => PlanEntryRecord.parse(p))
+    },
+    async readPlan(runId) {
+      const p = runs.get(assertSafeName("run id", runId))?.plan
+      return p && structuredClone(p)
+    },
     async appendSampling(runId, r) {
       run(runId).sampling.push(SamplingRecordSchema.parse(r))
     },

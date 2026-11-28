@@ -21,6 +21,15 @@ export const RawIndexEntry = z.object({
 })
 export type RawIndexEntry = z.infer<typeof RawIndexEntry>
 
+/** One line of `plan.jsonl`: a root task of the run, written once and atomically before anything runs. */
+export const PlanEntry = z.object({
+  taskId: z.string().min(1),
+  connector: z.string().min(1),
+  order: z.array(z.number().int().nonnegative()),
+  payload: z.record(z.string(), z.unknown()),
+})
+export type PlanEntry = z.infer<typeof PlanEntry>
+
 export const TaskStatus = z.enum(["pending", "done", "failed", "skipped"])
 export type TaskStatus = z.infer<typeof TaskStatus>
 
@@ -33,6 +42,21 @@ export const TaskRecord = z.object({
   reason: z.string().optional(),
   /** Why a failed task failed. */
   cause: FailureCause.optional(),
+  /** Global start order: connector index in the recipe, plan index, then follow-up depth and index. */
+  order: z.array(z.number().int().nonnegative()).optional(),
+  /** What the task did, recorded with its `done` (or `failed`) state; the run report is rebuilt from these. */
+  counters: z
+    .object({
+      items: z.number().int().nonnegative(),
+      newItems: z.number().int().nonnegative(),
+      duplicates: z.number().int().nonnegative(),
+      observations: z.number().int().nonnegative(),
+      metricValues: z.number().int().nonnegative(),
+      durationMs: z.number().nonnegative(),
+    })
+    .optional(),
+  /** Transport changes the task went through (`http` to `browser`). */
+  escalations: z.array(z.object({ from: z.string(), to: z.string() })).optional(),
   /** The task as the connector planned it (`id`, `kind`, `params`), so a run can be resumed from its log alone. */
   payload: z.record(z.string(), z.unknown()).optional(),
   updatedAt: z.iso.datetime({ offset: true }),
@@ -123,9 +147,12 @@ export interface CollectStore {
 
   /** Dedup keys, see `seenKey`. */
   seenHas(key: string): Promise<boolean>
-  seenAdd(key: string): Promise<void>
+  /** The item id that owns a key. `undefined` when the key is unknown or was recorded without an owner. */
+  seenGet(key: string): Promise<string | undefined>
+  /** Record a key. `itemId` is the item that owns it; adding an owner to a key that had none sets it, an existing owner is kept. */
+  seenAdd(key: string, itemId?: string): Promise<void>
   seenKeys(): Promise<string[]>
-  /** Recompute the seen keys from the stored items (current version of each). */
+  /** Recompute the seen keys, with their owners, from the stored items (current version of each). */
   rebuildSeenIndex(): Promise<void>
 
   createRun(runId: string, recipe: Recipe): Promise<RunRecord>
@@ -134,6 +161,9 @@ export interface CollectStore {
   /** The run-log writers below throw when the run was not created. Append a task state; the last line for a task id is its current state. */
   appendTask(runId: string, task: TaskRecord): Promise<void>
   tasks(runId: string): Reader<TaskRecord>
+  /** Write the whole root plan of a run in one atomic write. A second call replaces it. */
+  writePlan(runId: string, plan: PlanEntry[]): Promise<void>
+  readPlan(runId: string): Promise<PlanEntry[] | undefined>
   appendSampling(runId: string, record: SamplingRecord): Promise<void>
   sampling(runId: string): Reader<SamplingRecord>
   appendEvent(runId: string, event: EventRecord): Promise<void>
@@ -168,9 +198,54 @@ export class StoreVersionError extends Error {
   }
 }
 
+/**
+ * Drop the copy a task writes again when it is redone after a crash: records
+ * tagged with both `runId` and `taskId` are kept once per `key`, the first one
+ * wins; untagged records always pass.
+ */
+export function dropRedone<T>(source: Reader<T>, tag: (r: T) => string | undefined): Reader<T> {
+  return {
+    get skipped() {
+      return source.skipped
+    },
+    async *[Symbol.asyncIterator]() {
+      const seen = new Set<string>()
+      for await (const r of source) {
+        const k = tag(r)
+        if (k !== undefined) {
+          if (seen.has(k)) continue
+          seen.add(k)
+        }
+        yield r
+      }
+    },
+  }
+}
+
+/**
+ * Redo key of an observation: run, task, item and the values read. Two
+ * readings of one item with different values in the same task (two aliases of
+ * one post, say) are both kept; the same reading written again is not.
+ */
+export const observationRedoKey = (o: Observation) =>
+  o.runId && o.taskId
+    ? JSON.stringify([
+        o.runId,
+        o.taskId,
+        o.itemId,
+        "observation",
+        stableStringify({ m: o.metrics, p: o.partMetrics, r: o.rawValues, x: o.missing }),
+      ])
+    : undefined
+/** Redo key of a pickup: run, task, item, kind, target, method and evidence. */
+export const pickupRedoKey = (p: Pickup) =>
+  p.runId && p.taskId
+    ? JSON.stringify([p.runId, p.taskId, p.itemId, "pickup", p.kind, p.pickupItemId ?? p.pickupUrl ?? "", p.method, stableStringify(p.evidence)])
+    : undefined
+
 /** Dedup key kinds. Keys are `<kind>:<value>`. */
 export function seenKey(kind: "id" | "url" | "content", value: string): string {
-  if (value.includes("\n")) throw new Error("a seen key cannot contain a newline")
+  if (value.includes("\n") || value.includes("\t")) throw new Error("a seen key cannot contain a newline or a tab")
   return `${kind}:${value}`
 }
 

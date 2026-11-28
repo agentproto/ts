@@ -34,19 +34,39 @@ filesystem (Node built-ins only).
   with `run(recipe, { signal, onEvent, runId? })` and `resume(runId)`. A
   connector (`defineConnector`, `registerConnector`) plans tasks, fetches
   through the transports it declares (`api`, `http`, `browser`, tried in
-  order; 401/403/429, a challenge page or empty content moves a task to the
-  next one and the report records the escalation), and parses stored raws.
-  The engine stores every raw, dedups (native id, canonical URL, content id),
-  writes, then marks the task `done`. A connector with no usable transport or
-  a missing secret is `skipped` and the run goes on. Scheduling: a bounded
-  pool (`recipe.workers`, default 8) for non-browser tasks, one browser task
-  at a time, a per-host interval shared by all connectors, a per-connector
-  cap, one writer, the store lock held for the whole run.
-  `resume(runId)` reloads the frozen recipe and the task log, never refetches
-  a `done` task, and redoes `pending`, `failed` and `skipped` ones.
-  `computeCoverage(store)` gives the coverage cells. The transports are
+  order), and parses stored raws. 401/403/429, an empty body or a thrown
+  `blocked`/`empty` error moves a task to the next transport (the report
+  records the escalation); other statuses are `http` failures with no
+  fallback. A challenge page is a hard stop: the raw is kept, there is no
+  fallback, the connector is stopped for the rest of the run and its queued
+  tasks are `skipped` with reason `challenge`.
+  The whole root plan is written first in one atomic `plan.jsonl`. The engine
+  stores every raw, parses and validates every raw of a task before writing
+  anything, dedups (native id, canonical URL, content id; the seen index maps
+  each key to the item that owns it, so observations and links resolve to the
+  owner), writes, then marks the task `done` with its counters. Observations
+  and pickups carry `runId` and `taskId`, so a task redone after a crash does
+  not double-count (readers drop the identical copy). A connector with no usable
+  transport or a missing secret is `skipped` and the run goes on.
+  Scheduling: a bounded pool (`recipe.workers`, default 8) for api/http
+  attempts and a browser lane of one; each attempt is queued in the lane of its
+  own transport, so a fallback moves the task between lanes. Every request goes
+  through a per-host FIFO gate shared by all connectors (zero delay included).
+  Also a per-connector cap, one writer, and the store lock held for the whole
+  run and released last. One collector drives one store (the store lock makes a
+  second run wait). A store failure surfaces as a `CollectRunError` after the
+  active work has settled.
+  `resume(runId)` reloads the frozen recipe, the plan and the task log, never
+  refetches a `done` task, and redoes `pending`, `failed` and `skipped` ones in
+  their recorded global order. Caps are restored from the task states: a
+  retried failed task takes no new budget.
+  `computeCoverage(store, connectors)` gives the coverage cells;
+  `withPrimaryMetric` counts only a declared primary counter. The transports are
   contracts only here (`HttpTransport`, `BrowserTransport`, `SecretsPort`,
   `TransportError`); implementations are supplied by the caller.
+- **Not implemented yet**: `Recipe.sampling` (bands, per-domain cap, seed) is
+  accepted by the schema but ignored by the engine (it emits a `warning`
+  event); it comes in a follow-up PR.
 
 ## Rules baked into the schemas
 
