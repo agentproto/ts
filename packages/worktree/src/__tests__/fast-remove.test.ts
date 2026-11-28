@@ -8,7 +8,7 @@
 
 import { describe, it, expect, afterEach } from "vitest"
 import { mkdtemp, rm, writeFile, mkdir, readdir, readFile } from "node:fs/promises"
-import { existsSync, writeFileSync } from "node:fs"
+import { existsSync, writeFileSync, mkdirSync } from "node:fs"
 import { spawnSync } from "node:child_process"
 import { tmpdir } from "node:os"
 import { join, dirname } from "node:path"
@@ -345,4 +345,74 @@ describe("sweepWorktreeTrash", () => {
 		expect(() => sweepWorktreeTrash("/nonexistent/wt-fast-root", { spawnRemoval: (d) => swept.push(d) })).not.toThrow()
 		expect(swept).toHaveLength(0)
 	})
+})
+
+describe("removeWorktreeFast: the worktree's own pnpm virtual store", () => {
+	async function withVirtualStore(slug: string): Promise<{ repoRoot: string; wtDir: string; vstore: string }> {
+		const repoRoot = await makeRepo()
+		const wtDir = await addWorktree(repoRoot, slug)
+		const vstore = join(repoRoot, "vstores", slug)
+		mkdirSync(vstore, { recursive: true })
+		writeFileSync(join(vstore, "pkg.txt"), "x")
+		writeFileSync(join(wtDir, "pnpm-workspace.yaml"), `virtualStoreDir: ${vstore}\n`)
+		return { repoRoot, wtDir, vstore }
+	}
+
+	it("moves the per-worktree virtual store to the trash with the worktree, so one removal frees both", async () => {
+		const { repoRoot, wtDir, vstore } = await withVirtualStore("vs-one")
+		const { dirs, spawnRemoval } = spyRemoval()
+
+		await removeWorktreeFast(repoRoot, wtDir, { force: true, spawnRemoval, pruneStore: () => {} })
+
+		expect(existsSync(wtDir)).toBe(false)
+		expect(existsSync(vstore)).toBe(false)
+		expect(dirs).toHaveLength(2)
+		const vstoreTrash = dirs.find((d) => d.includes("vs-one-vstore-"))
+		expect(vstoreTrash).toBeDefined()
+		expect(await readFile(join(vstoreTrash!, "pkg.txt"), "utf8")).toBe("x")
+	}, 20_000)
+
+	it("prunes the shared store once the worktree is gone", async () => {
+		const { repoRoot, wtDir } = await withVirtualStore("vs-prune")
+		const storeDir = join(dirname(wtDir), ".pnpm-store")
+		mkdirSync(storeDir, { recursive: true })
+		const pruned: string[] = []
+
+		await removeWorktreeFast(repoRoot, wtDir, {
+			force: true,
+			spawnRemoval: () => {},
+			pruneStore: (dir) => pruned.push(dir),
+		})
+
+		expect(pruned).toEqual([storeDir])
+	}, 20_000)
+
+	it("does not prune when no shared store exists, nor when pruning is switched off", async () => {
+		const a = await withVirtualStore("vs-none")
+		const prunedA: string[] = []
+		await removeWorktreeFast(a.repoRoot, a.wtDir, {
+			force: true,
+			spawnRemoval: () => {},
+			pruneStore: (dir) => prunedA.push(dir),
+		})
+		expect(prunedA).toEqual([])
+
+		const b = await withVirtualStore("vs-off")
+		mkdirSync(join(dirname(b.wtDir), ".pnpm-store"), { recursive: true })
+		const prunedB: string[] = []
+		await removeWorktreeFast(b.repoRoot, b.wtDir, {
+			force: true,
+			spawnRemoval: () => {},
+			pruneStore: (dir) => prunedB.push(dir),
+			env: { AGENTPROTO_WORKTREES_PNPM_STORE_PRUNE: "0" },
+		})
+		expect(prunedB).toEqual([])
+	}, 20_000)
+
+	it("leaves the virtual store alone when the removal is refused", async () => {
+		const { repoRoot, wtDir, vstore } = await withVirtualStore("vs-refused")
+		await expect(removeWorktreeFast(repoRoot, wtDir, { spawnRemoval: () => {}, pruneStore: () => {} })).rejects.toThrow()
+		expect(existsSync(vstore)).toBe(true)
+		expect(existsSync(wtDir)).toBe(true)
+	}, 20_000)
 })

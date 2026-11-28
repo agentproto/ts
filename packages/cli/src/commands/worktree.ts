@@ -83,6 +83,8 @@ import {
   planSandboxCheckpointGc,
   applySandboxCheckpointGc,
   resolveWorktreesTurboCacheDir,
+  resolveWorktreesPnpmStoreDir,
+  checkWorktreesRootVolume,
   type WorktreeStatusEntry,
   type GcPlanEntry,
   type GcApplyOutcome,
@@ -127,7 +129,10 @@ Usage:
             branch --branch (default wt/<slug>) cut from --base (default
             origin/main). worktrees.root resolves as --root flag > env
             AGENTPROTO_WORKTREES_ROOT > config.json \`worktrees.root\` >
-            ~/.agentproto/worktrees. Writes a creation-provenance marker
+            ~/.agentproto/worktrees (put it on a large volume: warns when it
+            is on a nearly full system disk). Setup hooks share one pnpm
+            store per repo pool (<root>/<repoName>/.pnpm-store) with
+            clone-or-copy imports. Writes a creation-provenance marker
             into the worktree's private gitdir.
   rm        Stop the worktree's services, run its agentproto.json teardown
             hooks, then remove it. Refuses if the tree has modified tracked
@@ -1020,6 +1025,11 @@ async function runNew(args: readonly string[]): Promise<number> {
   const root = await resolveWorktreesRoot(values.root)
   const dir = join(root, repoLabel(repoRoot), slug)
 
+  // Every worktree of a dependency-heavy repo can take gigabytes: say so up
+  // front when the root sits on a system disk that is already short on space.
+  const volumeWarning = await checkWorktreesRootVolume(root)
+  if (volumeWarning) process.stderr.write(`agentproto worktree new: warning: ${volumeWarning}\n`)
+
   try {
     const provisioned = await runTool({
       tool: provisionWorktreeTool,
@@ -1049,6 +1059,12 @@ async function runNew(args: readonly string[]): Promise<number> {
       process.stdout.write(
         `turbo cache      ${resolveWorktreesTurboCacheDir()}  ` +
           `(export TURBO_CACHE_DIR=... to reuse it in manual builds run outside \`worktree.setup\`)\n`,
+      )
+      // Same for the pnpm store: setup ran against one store on the worktrees'
+      // volume with clone-or-copy imports; a manual install needs both too.
+      process.stdout.write(
+        `pnpm store       ${resolveWorktreesPnpmStoreDir(provisioned.cwd)}  ` +
+          `(export npm_config_store_dir=... npm_config_package_import_method=clone-or-copy for manual installs)\n`,
       )
     }
     return 0
