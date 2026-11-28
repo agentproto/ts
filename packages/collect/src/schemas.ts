@@ -96,6 +96,10 @@ export const ObservationBase = z.object({
   missing: z.partialRecord(MetricName, MissingReason).optional(),
   transport: z.string().optional(),
   runId: z.string().optional(),
+  /** Task that wrote it. */
+  taskId: z.string().optional(),
+  /** Durable identity of an engine-written record: readers keep the first record of a key and drop repeats. */
+  recordKey: z.string().optional(),
   rawRef: z.string().optional(),
 })
 
@@ -180,6 +184,10 @@ export const PickupBase = z.object({
   firstSeenAt: timestamp,
   measuredAt: timestamp,
   runId: z.string().optional(),
+  /** Task that wrote it. */
+  taskId: z.string().optional(),
+  /** Durable identity of an engine-written record: readers keep the first record of a key and drop repeats. */
+  recordKey: z.string().optional(),
 })
 
 /** Unrefined shape of `Pickup`, for consumers that need `.extend()`, `.pick()` or `.partial()`. */
@@ -263,7 +271,7 @@ export const Recipe = z.object({
 })
 export type Recipe = z.infer<typeof Recipe>
 
-export const FailureCause = z.enum(["blocked", "empty", "network", "parse", "other"])
+export const FailureCause = z.enum(["blocked", "empty", "network", "http", "parse", "other"])
 export type FailureCause = z.infer<typeof FailureCause>
 
 /** Every `with*` field and `eligible` is a count of items; shares are computed by the reader. */
@@ -293,6 +301,8 @@ export const ConnectorReport = z.object({
   connector: z.string().min(1),
   status: z.enum(["ok", "partial", "failed", "skipped"]).default("ok"),
   skippedReason: z.string().optional(),
+  /** Why the status is `failed` or `partial`. */
+  reason: z.string().optional(),
   tasks: z.object({
     planned: z.number().int().nonnegative(),
     done: z.number().int().nonnegative(),

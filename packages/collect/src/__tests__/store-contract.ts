@@ -235,6 +235,75 @@ export function storeContract(
         expect(await f.readReport("none")).toBeUndefined()
       }))
 
+    it("keeps the owner of a seen key, adds one to an ownerless key, and persists owners", () =>
+      withStore(async (s, reopen) => {
+        await s.seenAdd(seenKey("url", "https://a.test/x"), "hn:1")
+        await s.seenAdd(seenKey("url", "https://a.test/x"), "hn:2")
+        await s.seenAdd(seenKey("id", "hn:9"))
+        expect(await s.seenGet(seenKey("id", "hn:9"))).toBeUndefined()
+        await s.seenAdd(seenKey("id", "hn:9"), "hn:1")
+        expect(await s.seenGet(seenKey("url", "https://a.test/x"))).toBe("hn:1")
+        expect(await s.seenGet(seenKey("id", "hn:9"))).toBe("hn:1")
+        expect(await s.seenGet(seenKey("id", "nope"))).toBeUndefined()
+        const f = await reopen()
+        expect(await f.seenGet(seenKey("url", "https://a.test/x"))).toBe("hn:1")
+        expect(await f.seenGet(seenKey("id", "hn:9"))).toBe("hn:1")
+        expect((await f.seenKeys()).sort()).toEqual(["id:hn:9", "url:https://a.test/x"])
+        expect(() => seenKey("id", "a\tb")).toThrow()
+        await expect(s.seenAdd("id:a\tb")).rejects.toThrow()
+        await expect(s.seenAdd("id:ok", "hn:\t1")).rejects.toThrow()
+      }))
+
+    it("rebuilds seen owners from the items", () =>
+      withStore(async (s, reopen) => {
+        await s.upsertItem(item(1, { contentId: "same" }))
+        await s.upsertItem(item(2, { contentId: "same" }))
+        await s.rebuildSeenIndex()
+        const f = await reopen()
+        expect(await f.seenGet(seenKey("id", "hn:2"))).toBe("hn:2")
+        expect(await f.seenGet(seenKey("url", "https://example.com/1"))).toBe("hn:1")
+        expect(await f.seenGet(seenKey("content", "same"))).toBe("hn:1")
+      }))
+
+    it("writes the plan in one replaceable write", () =>
+      withStore(async (s, reopen) => {
+        await s.createRun("p1", recipe)
+        expect(await s.readPlan("p1")).toBeUndefined()
+        const entry = (n: number) => ({ taskId: `hn/t${n}`, connector: "hn", order: [0, n], payload: { id: `t${n}`, params: {} } })
+        await s.writePlan("p1", [entry(0), entry(1)])
+        await s.writePlan("p1", [entry(0), entry(1), entry(2)])
+        expect((await (await reopen()).readPlan("p1"))?.map((e) => e.order)).toEqual([[0, 0], [0, 1], [0, 2]])
+        await expect(s.writePlan("missing", [])).rejects.toThrow()
+      }))
+
+    it("keeps the first record of a recordKey and every record without one", () =>
+      withStore(async (s, reopen) => {
+        const o = (recordKey: string | undefined, views: number) => ({
+          itemId: "hn:1",
+          measuredAt: T,
+          metrics: { views },
+          runId: "r1",
+          taskId: "t1",
+          recordKey,
+        })
+        await s.appendObservation(o("k1", 5))
+        await s.appendObservation({ ...o("k1", 5), measuredAt: "2026-11-28T11:00:00Z" })
+        await s.appendObservation(o("k1", 99)) // same record, other values: the first write wins
+        await s.appendObservation(o("k2", 5)) // distinct reading with equal values: kept
+        await s.appendObservation(o(undefined, 5))
+        await s.appendObservation(o(undefined, 5))
+        const pk = (recordKey?: string) => ({ ...pickup(1), recordKey })
+        await s.appendPickup(pk("p1"))
+        await s.appendPickup(pk("p1"))
+        await s.appendPickup(pk("p2"))
+        await s.appendPickup(pk())
+        await s.appendPickup(pk())
+        const f = await reopen()
+        const obs = (await readAll(f.observations())).records
+        expect(obs.map((x) => [x.recordKey, x.metrics.views])).toEqual([["k1", 5], ["k2", 5], [undefined, 5], [undefined, 5]])
+        expect((await readAll(f.pickups())).records).toHaveLength(4)
+      }))
+
     it("refuses a second lock and allows one again after release", () =>
       withStore(async (s) => {
         const lock = await s.acquireLock()

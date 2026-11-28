@@ -24,6 +24,21 @@ storeContract("disk store", async () => {
   return { store, reopen: () => openStore(d.path), cleanup: d.cleanup }
 })
 
+describe("disk store seen index format", () => {
+  it("reads old lines that carry only the key, and lets an owner be added to them", async () => {
+    const path = await dir()
+    await initStore(path)
+    await writeFile(join(path, "seen.idx"), "id:hn:1\nurl:https://a.test/x\thn:1\nid:hn:2\n")
+    const s = await openStore(path)
+    expect(await s.seenHas("id:hn:1")).toBe(true)
+    expect(await s.seenGet("id:hn:1")).toBeUndefined()
+    expect(await s.seenGet("url:https://a.test/x")).toBe("hn:1")
+    await s.seenAdd("id:hn:1", "hn:1")
+    expect(await (await openStore(path)).seenGet("id:hn:1")).toBe("hn:1")
+    expect((await s.seenKeys()).sort()).toEqual(["id:hn:1", "id:hn:2", "url:https://a.test/x"])
+  })
+})
+
 describe("disk store layout and failures", () => {
   it("writes the documented layout", async () => {
     const path = await dir()
