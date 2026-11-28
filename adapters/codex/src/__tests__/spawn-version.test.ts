@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { composeSpawn, RuntimeConfigError } from "@agentproto/harness"
 import { codex } from "../index.js"
 
 describe("codex spawn version", () => {
@@ -47,5 +48,35 @@ describe("codex model menu", () => {
   it("does not list ids that do not exist upstream", () => {
     expect(codex.models?.allowed).not.toContain("gpt-6-terra")
     expect(codex.models?.allowed).not.toContain("gpt-6-codex")
+  })
+})
+
+describe("codex service_tier / reasoning_effort options", () => {
+  const config = (options: Record<string, string>) =>
+    JSON.parse(composeSpawn(codex, { options }).env.CODEX_CONFIG ?? "{}") as Record<string, unknown>
+
+  it("service_tier sets codex's service_tier through the wrapper's CODEX_CONFIG", () => {
+    expect(config({ service_tier: "fast" })).toEqual({ service_tier: "fast" })
+  })
+
+  it("reasoning_effort sets model_reasoning_effort", () => {
+    expect(config({ reasoning_effort: "low" })).toEqual({ model_reasoning_effort: "low" })
+  })
+
+  it("both together land in the same config object", () => {
+    expect(config({ service_tier: "fast", reasoning_effort: "minimal" })).toEqual({
+      service_tier: "fast",
+      model_reasoning_effort: "minimal",
+    })
+  })
+
+  it("sets nothing when neither option is given", () => {
+    expect(composeSpawn(codex, {}).env.CODEX_CONFIG).toBeUndefined()
+    expect(composeSpawn(codex, { options: { model: "gpt-5.5" } }).env.CODEX_CONFIG).toBeUndefined()
+  })
+
+  it("rejects values codex does not accept", () => {
+    expect(() => composeSpawn(codex, { options: { service_tier: "turbo" } })).toThrow(RuntimeConfigError)
+    expect(() => composeSpawn(codex, { options: { reasoning_effort: "extreme" } })).toThrow(RuntimeConfigError)
   })
 })
