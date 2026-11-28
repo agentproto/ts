@@ -1,0 +1,66 @@
+import { describe, expect, it } from "vitest"
+import { canonicalUrl, itemId, itemIdFromUrl, normalizeText, textFingerprint } from "../ids"
+
+describe("canonicalUrl", () => {
+  it("drops tracking params, keeps real ones sorted", () => {
+    expect(canonicalUrl("https://Example.com/a?utm_source=x&b=2&fbclid=z&a=1&gclid=q&ref=hn&si=9")).toBe(
+      "https://example.com/a?a=1&b=2",
+    )
+  })
+  it("drops mailing and social tracking ids", () => {
+    expect(canonicalUrl("https://example.com/p?mc_cid=1&mc_eid=2&ref_src=tw&igshid=3&id=7")).toBe(
+      "https://example.com/p?id=7",
+    )
+  })
+  it("drops the fragment", () => {
+    expect(canonicalUrl("https://example.com/a#section-2")).toBe("https://example.com/a")
+  })
+  it("strips default ports only", () => {
+    expect(canonicalUrl("https://example.com:443/a")).toBe("https://example.com/a")
+    expect(canonicalUrl("http://example.com:80/a")).toBe("http://example.com/a")
+    expect(canonicalUrl("https://example.com:8443/a")).toBe("https://example.com:8443/a")
+  })
+  it("treats trailing slash consistently", () => {
+    expect(canonicalUrl("https://example.com/")).toBe("https://example.com")
+    expect(canonicalUrl("https://example.com")).toBe("https://example.com")
+    expect(canonicalUrl("https://example.com/a/")).toBe("https://example.com/a")
+    expect(canonicalUrl("https://example.com/a/?b=1")).toBe("https://example.com/a?b=1")
+  })
+  it("is idempotent", () => {
+    const once = canonicalUrl("HTTPS://Example.com:443/a/?utm_medium=m&z=1&y=2#f")
+    expect(canonicalUrl(once)).toBe(once)
+  })
+  it("returns non-URLs trimmed", () => {
+    expect(canonicalUrl("  not a url ")).toBe("not a url")
+  })
+})
+
+describe("ids", () => {
+  it("builds source:nativeId", () => {
+    expect(itemId("hackernews", "41234567")).toBe("hackernews:41234567")
+    expect(itemId("x", 2121375309287301360n.toString())).toBe("x:2121375309287301360")
+  })
+  it("hashes the canonical URL when there is no native id", async () => {
+    const a = await itemIdFromUrl("web", "https://example.com/a?utm_source=x#top")
+    const b = await itemIdFromUrl("web", "https://EXAMPLE.com/a/")
+    expect(a).toBe(b)
+    expect(a).toMatch(/^web:[0-9a-f]{64}$/)
+  })
+})
+
+describe("textFingerprint", () => {
+  it("ignores case, whitespace and punctuation", async () => {
+    const a = await textFingerprint("Hello,   World!\n")
+    const b = await textFingerprint("hello world")
+    expect(a).toBe(b)
+    expect(a).toMatch(/^[0-9a-f]{64}$/)
+  })
+  it("differs for different words", async () => {
+    expect(await textFingerprint("hello world")).not.toBe(await textFingerprint("hello there"))
+  })
+  it("matches a known SHA-256", async () => {
+    // sha256("abc")
+    expect(await textFingerprint("ABC")).toBe("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+    expect(normalizeText("A  b\tC.")).toBe("a b c")
+  })
+})
