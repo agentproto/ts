@@ -4421,13 +4421,18 @@ async function spawnAgentSessionOnce(
   // boot-time `defaults.mcp.deferredTools` applies. Skip the adapter lookup
   // when the spawn already decided or the box is remote.
   const adapterCaps =
-    input.deferredTools === undefined && input.sandbox === undefined
-      ? await resolveAgentAdapter(input.adapter)
-      : undefined
+    input.sandbox === undefined ? await resolveAgentAdapter(input.adapter) : undefined
+  if (adapterCaps?.deprecated) {
+    const { replacedBy, message } = adapterCaps.deprecated
+    spawnWarnings.push(
+      `harness "${input.adapter}" is deprecated; use "${replacedBy}" instead.` +
+        (message ? ` ${message}` : ""),
+    )
+  }
   const deferredToolsOverride = resolveSpawnDeferredTools({
     spawnOverride: input.deferredTools,
-    nativeToolSearch: adapterCaps?.nativeToolSearch === true,
-    deferredToolDiscovery: adapterCaps?.deferredToolDiscovery === true,
+    nativeToolSearch: input.deferredTools === undefined && adapterCaps?.nativeToolSearch === true,
+    deferredToolDiscovery: input.deferredTools === undefined && adapterCaps?.deferredToolDiscovery === true,
     roleDefault: role.deferredTools,
   })
   // Orchestrator role (WP3): when requested, mint a scoped

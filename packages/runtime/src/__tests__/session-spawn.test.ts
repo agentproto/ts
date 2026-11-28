@@ -2289,6 +2289,22 @@ describe("spawnAgentSession — role gate (spawn-role-profiles)", () => {
     if (result.ok) expect(result.descriptor.meta?.agentSlug).toBe("supervisor")
   })
 
+  it("a deprecated harness still spawns and warns with its replacement", async () => {
+    const resolveAgentAdapter: AgentAdapterResolver = async () => ({
+      startSession: vi.fn(async () => fakeAgentSession()) as never,
+      commandPreview: "mock-adapter",
+      deprecated: { replacedBy: "antigravity", message: "Gemini models stay available." },
+    })
+    const { deps } = baseDeps({ resolveAgentAdapter })
+    const result = await spawnAgentSession(deps, { adapter: "mock", cwd: "/tmp" })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      const text = result.warnings?.join("\n") ?? ""
+      expect(text).toContain('harness "mock" is deprecated; use "antigravity"')
+      expect(text).toContain("Gemini models stay available.")
+    }
+  })
+
   it("an unknown configured default agent warns once and falls back to the built-in default", async () => {
     const buildOrchestratorMcp = makeBuildOrchestratorMcp()
     const { deps } = baseDeps({

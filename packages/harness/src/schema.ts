@@ -702,6 +702,10 @@ export const agentCliFrontmatterSchema = z
       note: z.string().optional(),
     }).strict()).optional(),
     tags: z.array(z.string().regex(TAG_PATTERN)).optional(),
+    deprecated: z.object({
+      replacedBy: z.string().regex(ID_PATTERN),
+      message: z.string().min(1).max(500).optional(),
+    }).strict().optional(),
     metadata: z.record(z.string(), z.unknown()).optional(),
   })
   .strict()
