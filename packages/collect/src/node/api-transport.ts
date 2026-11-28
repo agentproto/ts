@@ -49,7 +49,12 @@ export function createApiTransport(options: ApiTransportOptions): HttpTransport 
       const headers: Record<string, string> = { ...(req.headers ?? {}) }
       const credentialHeaders = [...(req.credentialHeaders ?? [])]
       if (auth.type === "query") {
-        const u = new URL(url)
+        let u: URL
+        try {
+          u = new URL(url)
+        } catch {
+          throw new TransportError("network", "invalid request URL (it must be absolute)")
+        }
         u.searchParams.set(auth.name, secret)
         url = u.toString()
       } else {

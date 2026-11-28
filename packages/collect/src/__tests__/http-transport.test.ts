@@ -427,6 +427,11 @@ describe("api transport", () => {
     expect(seen).toHaveLength(0)
   })
 
+  it("a relative URL under query auth is a typed error", async () => {
+    const t = createApiTransport({ http, secrets, auth: { type: "query", name: "key", secret: "KEY" } })
+    expect(await caught(t.request({ url: "/relative" }))).toMatchObject({ cause: "network" })
+  })
+
   it("never lets the secret out in an error, url or body", async () => {
     routes.set("/leak", (req, res) => text(res, 403, `bad key ${req.headers.authorization} / ${req.url}`))
     for (const auth of [
