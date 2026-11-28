@@ -249,7 +249,14 @@ function randomId(random: () => number): string {
 }
 
 function toError(e: unknown): Error {
-  return e instanceof Error ? e : new Error(`rejected with ${e === null || e === undefined ? String(e) : typeof e === "string" ? e : JSON.stringify(e)}`)
+  if (e instanceof Error) return e
+  let text: string
+  try {
+    text = typeof e === "string" ? e : (JSON.stringify(e) ?? String(e))
+  } catch {
+    text = String(e)
+  }
+  return new Error(`rejected with ${text}`)
 }
 
 function abortError(): Error {
@@ -614,8 +621,8 @@ export function createCollector(options: CollectorOptions): Collector {
       return removed.sort((x, y) => compareOrder(x.order, y.order))
     }
 
-    async function skipHalted(state: ConnectorState, removed: Entry[]) {
-      await emit("connector.stopped", { connector: state.id, reason: "challenge" })
+    async function skipHalted(state: ConnectorState, removed: Entry[], first: boolean) {
+      if (first) await emit("connector.stopped", { connector: state.id, reason: "challenge" })
       for (const e of removed) await skip(e, "challenge", "challenge")
     }
 
@@ -825,6 +832,7 @@ export function createCollector(options: CollectorOptions): Collector {
 
       const fetchedAt = iso()
       // Synchronous, before any await: nothing of this connector can start after this line.
+      const firstHalt = failure?.challenge === true && !state.stopped
       const halted = failure?.challenge ? haltConnector(state) : []
       if (failure) {
         const f = failure
@@ -845,7 +853,7 @@ export function createCollector(options: CollectorOptions): Collector {
         })
         if (f.challenge) {
           await finishFailed(entry, f)
-          await skipHalted(state, halted)
+          await skipHalted(state, halted, firstHalt)
           return
         }
         const next = state.transports[entry.attempt + 1]

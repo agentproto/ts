@@ -60,7 +60,7 @@ filesystem (Node built-ins only).
   tasks start first; there is no global order across the two lanes, by design.
   Each engine-written observation and pickup carries a `recordKey` (hash of run,
   task, raw hash and position in the parse output): readers keep the first
-  record of a key, so a task redone after a crash never double-counts while
+  record of a key, so a task redone after a crash that fetches the same bytes never double-counts (a page whose bytes changed is a new raw and a new reading) while
   distinct readings with equal values are all kept. Each task start is recorded
   once (`started`) and charges the cap budget, so a crash after a start still
   counts. Resuming a run with no plan file plans it again from the frozen recipe.
